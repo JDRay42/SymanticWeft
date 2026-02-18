@@ -59,6 +59,42 @@ impl std::fmt::Display for RelType {
     }
 }
 
+impl std::str::FromStr for UnitType {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "assertion" => Ok(UnitType::Assertion),
+            "question" => Ok(UnitType::Question),
+            "inference" => Ok(UnitType::Inference),
+            "challenge" => Ok(UnitType::Challenge),
+            "constraint" => Ok(UnitType::Constraint),
+            _ => Err(format!(
+                "unknown unit type {:?}; expected one of: \
+                 assertion, question, inference, challenge, constraint",
+                s
+            )),
+        }
+    }
+}
+
+impl std::str::FromStr for RelType {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "supports" => Ok(RelType::Supports),
+            "rebuts" => Ok(RelType::Rebuts),
+            "derives-from" => Ok(RelType::DerivesFrom),
+            "questions" => Ok(RelType::Questions),
+            "refines" => Ok(RelType::Refines),
+            _ => Err(format!(
+                "unknown rel type {:?}; expected one of: \
+                 supports, rebuts, derives-from, questions, refines",
+                s
+            )),
+        }
+    }
+}
+
 /// A typed link from this unit to another unit in the graph.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Reference {
