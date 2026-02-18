@@ -1,3 +1,14 @@
+//! Spec-conformance validation for [`SemanticUnit`]s.
+//!
+//! The single public entry point is [`validate_unit`], which checks a unit
+//! against every normative rule in `spec/semantic-unit.md §8`. Errors are
+//! returned in field order so that the first failure is always predictable and
+//! easy to act on.
+//!
+//! Validation is structural and syntactic. Semantic consistency (e.g. whether
+//! a `challenge` unit's content is actually about its referenced unit) is not
+//! enforced here and is left to reasoning layers.
+
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -6,6 +17,9 @@ use thiserror::Error;
 use crate::types::SemanticUnit;
 
 /// Errors returned when a [`SemanticUnit`] fails conformance validation.
+///
+/// Variants are ordered to match the field order defined in
+/// `spec/semantic-unit.md §8`, so callers can rely on stable error sequencing.
 #[derive(Debug, Error, PartialEq)]
 pub enum ValidationError {
     #[error("id must be a valid UUIDv7 (RFC 9562), got: {0:?}")]
@@ -16,6 +30,9 @@ pub enum ValidationError {
 
     #[error("author must not be empty")]
     EmptyAuthor,
+
+    #[error("created_at must be a valid ISO 8601 date-time, got: {0:?}")]
+    InvalidTimestamp(String),
 
     #[error("confidence must be between 0.0 and 1.0 inclusive, got {0}")]
     InvalidConfidence(f64),
@@ -32,9 +49,6 @@ pub enum ValidationError {
     #[error("reference id at index {0} must be a valid UUIDv7, got: {1:?}")]
     InvalidReferenceId(usize, String),
 
-    #[error("created_at must be a valid ISO 8601 date-time, got: {0:?}")]
-    InvalidTimestamp(String),
-
     #[error(
         "extension field {0:?} is invalid; names must match x-<reverse-domain>.<name> \
          (e.g. x-com.example.myfield) and be lowercase"
@@ -48,26 +62,32 @@ pub enum ValidationError {
 /// [`ValidationError`] found. Errors are returned in field order as defined
 /// by the spec.
 pub fn validate_unit(unit: &SemanticUnit) -> Result<(), ValidationError> {
+    // §3.1 — id must be a valid UUIDv7.
     validate_uuid_v7(&unit.id)
         .map_err(|_| ValidationError::InvalidId(unit.id.clone()))?;
 
+    // §3.3 — content must not be empty.
     if unit.content.is_empty() {
         return Err(ValidationError::EmptyContent);
     }
 
+    // §3.5 — author must not be empty.
     if unit.author.is_empty() {
         return Err(ValidationError::EmptyAuthor);
     }
 
+    // §3.4 — created_at must be a valid ISO 8601 date-time.
     validate_timestamp(&unit.created_at)
         .map_err(|_| ValidationError::InvalidTimestamp(unit.created_at.clone()))?;
 
+    // §4.1 — confidence, if present, must be in [0.0, 1.0].
     if let Some(c) = unit.confidence {
         if !(0.0..=1.0).contains(&c) {
             return Err(ValidationError::InvalidConfidence(c));
         }
     }
 
+    // §4.2 — assumptions array must be non-empty and contain non-empty strings.
     if let Some(assumptions) = &unit.assumptions {
         if assumptions.is_empty() {
             return Err(ValidationError::EmptyAssumptions);
@@ -79,6 +99,7 @@ pub fn validate_unit(unit: &SemanticUnit) -> Result<(), ValidationError> {
         }
     }
 
+    // §4.4 — references array must be non-empty; each ref id must be UUIDv7.
     if let Some(references) = &unit.references {
         if references.is_empty() {
             return Err(ValidationError::EmptyReferences);
@@ -89,6 +110,7 @@ pub fn validate_unit(unit: &SemanticUnit) -> Result<(), ValidationError> {
         }
     }
 
+    // §6 — extension field names must match the x-<reverse-domain>.<name> pattern.
     for key in unit.extensions.keys() {
         if !EXTENSION_RE.is_match(key) {
             return Err(ValidationError::InvalidExtensionFieldName(key.clone()));
@@ -100,6 +122,7 @@ pub fn validate_unit(unit: &SemanticUnit) -> Result<(), ValidationError> {
 
 // --- helpers -----------------------------------------------------------------
 
+/// Returns `Ok(())` if `s` is a valid UUIDv7 string, otherwise `Err(())`.
 fn validate_uuid_v7(s: &str) -> Result<(), ()> {
     match uuid::Uuid::parse_str(s) {
         Ok(u) if u.get_version_num() == 7 => Ok(()),
@@ -107,13 +130,20 @@ fn validate_uuid_v7(s: &str) -> Result<(), ()> {
     }
 }
 
+/// Returns `Ok(())` if `s` is a valid RFC 3339 / ISO 8601 date-time string.
 fn validate_timestamp(s: &str) -> Result<(), ()> {
     chrono::DateTime::parse_from_rfc3339(s)
         .map(|_| ())
         .map_err(|_| ())
 }
 
-/// `^x-[a-z0-9]+(\.[a-z0-9]+)+$`
+/// Compiled regex for valid extension field names (spec §6):
+/// `^x-<reverse-domain>.<name>$` — all lowercase, at least two dot-separated
+/// segments after the `x-` prefix.
+///
+/// Examples of valid names:
+/// - `x-com.example.myfield`
+/// - `x-org.semanticweft.priority`
 static EXTENSION_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^x-[a-z0-9]+(\.[a-z0-9]+)+$").expect("invalid extension regex")
 });

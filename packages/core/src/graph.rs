@@ -1,3 +1,24 @@
+//! In-memory graph of [`SemanticUnit`]s with traversal operations.
+//!
+//! A [`Graph`] is a thin traversal layer over a local collection of units. It
+//! is not a storage engine — load units from disk or a node, add them here,
+//! then use the query methods to navigate relationships.
+//!
+//! Units are connected by their [`references`](crate::types::SemanticUnit::references)
+//! fields. The graph is directed: an edge goes *from* the referencing unit
+//! *to* the referenced unit (i.e. in the direction of the `rel` arrow).
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! let mut graph = Graph::new();
+//! graph.add(some_unit);
+//! graph.add(another_unit);
+//!
+//! let ancestors = graph.ancestors("019526b2-...");
+//! let subg = graph.subgraph("019526b2-...");
+//! ```
+
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::types::{SemanticUnit, UnitType};
@@ -44,6 +65,7 @@ impl Graph {
         self.units.len()
     }
 
+    /// Returns `true` if the graph contains no units.
     pub fn is_empty(&self) -> bool {
         self.units.is_empty()
     }
@@ -63,8 +85,10 @@ impl Graph {
 
     /// The units that `id` directly references (outgoing edges).
     ///
-    /// Units referenced but not present in this graph are silently omitted —
-    /// the spec requires receivers not to reject units with unknown references.
+    /// These are the units that `id` *depends on* — the referenced units in
+    /// `id`'s `references` array. Units referenced but not present in this
+    /// graph are silently omitted (the spec requires receivers not to reject
+    /// units with unknown references).
     pub fn outgoing(&self, id: &str) -> Vec<&SemanticUnit> {
         let Some(unit) = self.units.get(id) else {
             return vec![];
@@ -78,6 +102,9 @@ impl Graph {
     }
 
     /// The units that directly reference `id` (incoming edges).
+    ///
+    /// These are the units that *depend on* `id` — units whose `references`
+    /// array contains `id`.
     pub fn incoming(&self, id: &str) -> Vec<&SemanticUnit> {
         self.units
             .values()
@@ -91,17 +118,24 @@ impl Graph {
 
     /// All ancestors of `id` — units reachable by following outgoing edges
     /// recursively (i.e., what this unit is derived from, transitively).
+    ///
+    /// The start unit itself is excluded from the result.
     pub fn ancestors(&self, id: &str) -> Vec<&SemanticUnit> {
         self.bfs(id, Direction::Outgoing)
     }
 
     /// All descendants of `id` — units that reference `id`, transitively.
+    ///
+    /// The start unit itself is excluded from the result.
     pub fn descendants(&self, id: &str) -> Vec<&SemanticUnit> {
         self.bfs(id, Direction::Incoming)
     }
 
     /// The connected subgraph containing `id`: all ancestors, descendants,
     /// and the unit itself.
+    ///
+    /// Units not reachable from `id` in either direction are excluded. Units
+    /// referenced but not present in this graph are silently omitted.
     pub fn subgraph(&self, id: &str) -> Graph {
         let mut seen: HashSet<&str> = HashSet::new();
         seen.insert(id);
@@ -118,12 +152,17 @@ impl Graph {
         )
     }
 
-    // BFS traversal in the given direction, excluding the start node.
+    // --- private helpers -----------------------------------------------------
+
+    /// Breadth-first traversal starting from `start` in the given direction.
+    ///
+    /// Returns all reachable units *excluding* the start node itself.
     fn bfs(&self, start: &str, direction: Direction) -> Vec<&SemanticUnit> {
         let mut visited: HashSet<&str> = HashSet::new();
         let mut queue: VecDeque<&str> = VecDeque::new();
         let mut result: Vec<&SemanticUnit> = Vec::new();
 
+        // Seed with the start node so we never add it to the result.
         visited.insert(start);
         for neighbour in self.neighbours(start, direction) {
             if visited.insert(neighbour.id.as_str()) {
@@ -144,6 +183,7 @@ impl Graph {
         result
     }
 
+    /// Return the immediate neighbours of `id` in the given direction.
     fn neighbours(&self, id: &str, direction: Direction) -> Vec<&SemanticUnit> {
         match direction {
             Direction::Outgoing => self.outgoing(id),
@@ -152,6 +192,8 @@ impl Graph {
     }
 }
 
+/// Traversal direction for BFS: follow outgoing edges (to referenced units)
+/// or incoming edges (to referencing units).
 #[derive(Clone, Copy)]
 enum Direction {
     Outgoing,

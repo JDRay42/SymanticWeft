@@ -1,9 +1,19 @@
+//! Core data types for the SemanticWeft protocol.
+//!
+//! This module defines the wire-format structures that make up a Semantic Unit:
+//! [`SemanticUnit`], [`UnitType`], [`RelType`], [`Reference`], and [`Source`].
+//! All types serialise to and from JSON exactly as described in
+//! `spec/semantic-unit.md`.
+
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
 /// The semantic role of a unit. Determines how its content is interpreted
 /// and which reference relationships are meaningful.
+///
+/// Serialises as a lowercase snake_case string (e.g. `"assertion"`).
+/// See `spec/semantic-unit.md §5` for full type semantics.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum UnitType {
@@ -19,6 +29,7 @@ pub enum UnitType {
     Constraint,
 }
 
+/// Formats the type as its lowercase wire-format string (e.g. `"assertion"`).
 impl std::fmt::Display for UnitType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -32,6 +43,9 @@ impl std::fmt::Display for UnitType {
 }
 
 /// The typed relationship a referencing unit has to the unit it references.
+///
+/// Serialises as a kebab-case string (e.g. `"derives-from"`).
+/// See `spec/semantic-unit.md §4.4.1` for the full relationship table.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum RelType {
@@ -47,6 +61,7 @@ pub enum RelType {
     Refines,
 }
 
+/// Formats the relationship as its kebab-case wire-format string (e.g. `"derives-from"`).
 impl std::fmt::Display for RelType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -59,6 +74,9 @@ impl std::fmt::Display for RelType {
     }
 }
 
+/// Parses a [`UnitType`] from its lowercase wire-format string.
+///
+/// Returns `Err` with a descriptive message if the string is not recognised.
 impl std::str::FromStr for UnitType {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -77,6 +95,9 @@ impl std::str::FromStr for UnitType {
     }
 }
 
+/// Parses a [`RelType`] from its kebab-case wire-format string.
+///
+/// Returns `Err` with a descriptive message if the string is not recognised.
 impl std::str::FromStr for RelType {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -96,6 +117,9 @@ impl std::str::FromStr for RelType {
 }
 
 /// A typed link from this unit to another unit in the graph.
+///
+/// Serialises as `{ "id": "<uuidv7>", "rel": "<rel-type>" }`.
+/// See `spec/semantic-unit.md §4.4`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Reference {
     /// UUIDv7 of the referenced unit.
@@ -105,14 +129,22 @@ pub struct Reference {
 }
 
 /// A citation or provenance reference for a unit's content.
+///
+/// Serialised as either a plain string (URI or free-form citation) or as a
+/// JSON object with `label` and an optional `uri`.
+///
+/// See `spec/semantic-unit.md §4.3`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum Source {
-    /// A URI or free-form citation string.
+    /// A URI or free-form citation string (e.g. `"Smith et al., 2024"`).
     Uri(String),
-    /// A structured citation with a human-readable label and an optional URI.
+    /// A structured citation with a human-readable label and an optional
+    /// dereferenceable link.
     Labeled {
+        /// Human-readable citation text.
         label: String,
+        /// Optional dereferenceable link to the source document.
         #[serde(skip_serializing_if = "Option::is_none")]
         uri: Option<String>,
     },
@@ -132,6 +164,8 @@ pub enum Source {
 ///
 /// Fields not defined by the spec are captured in `extensions`. Their names
 /// must match `^x-[a-z0-9]+(\.[a-z0-9]+)+$` to be valid.
+///
+/// See `spec/semantic-unit.md §3–4` for the full field specification.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SemanticUnit {
     /// UUIDv7 identifier (RFC 9562). The time component encodes creation order.
@@ -141,13 +175,13 @@ pub struct SemanticUnit {
     #[serde(rename = "type")]
     pub unit_type: UnitType,
 
-    /// The human-readable statement this unit expresses.
+    /// The human-readable statement this unit expresses. Must be non-empty.
     pub content: String,
 
     /// ISO 8601 timestamp of creation. SHOULD be UTC.
     pub created_at: String,
 
-    /// Identifier of the agent that created this unit.
+    /// Identifier of the agent that created this unit. Must be non-empty.
     pub author: String,
 
     /// Degree of belief: 0.0 (none) to 1.0 (certain). Absence ≠ 0.0.
@@ -167,6 +201,9 @@ pub struct SemanticUnit {
     pub references: Option<Vec<Reference>>,
 
     /// Extension fields (`x-<reverse-domain>.<name>`).
+    ///
+    /// Captured via `#[serde(flatten)]` so they round-trip cleanly through
+    /// JSON serialisation without any explicit enumeration.
     #[serde(flatten)]
     pub extensions: HashMap<String, serde_json::Value>,
 }
