@@ -205,6 +205,8 @@ mod tests {
             assumptions: None,
             source: None,
             references: None,
+            visibility: None,
+            audience: None,
             extensions: HashMap::new(),
         }
     }

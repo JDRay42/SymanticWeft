@@ -1,3 +1,14 @@
+//! `sweft` — SemanticWeft protocol command-line interface.
+//!
+//! Provides three subcommands for working with Semantic Units on the command
+//! line:
+//!
+//! - **`validate`** — check a unit or array of units against the spec.
+//! - **`render`** — print a human-readable summary of a unit or graph.
+//! - **`new`** — create a new unit with an auto-generated id and timestamp.
+//!
+//! All subcommands read JSON from a file path or from stdin (`-`).
+
 use std::fs;
 use std::io::{self, Read};
 use std::path::PathBuf;
@@ -116,6 +127,8 @@ fn main() {
         Command::Render { file } => {
             let json = read_input(&file);
             let units = parse_units(&json);
+            // A single unit is rendered in full detail; multiple units use the
+            // grouped graph summary view.
             if units.len() == 1 {
                 print!("{}", semanticweft::render::render_unit(&units[0]));
             } else {
@@ -133,6 +146,7 @@ fn main() {
             source,
             references,
         } => {
+            // Parse each --ref argument from "<uuid>:<rel>" into a Reference.
             let parsed_refs = if references.is_empty() {
                 None
             } else {
@@ -155,6 +169,7 @@ fn main() {
 
             let mut unit = SemanticUnit::new(unit_type, content, author);
             unit.confidence = confidence;
+            // An empty --assumption list means the field is absent, not present-but-empty.
             unit.assumptions = if assumptions.is_empty() {
                 None
             } else {
@@ -163,6 +178,8 @@ fn main() {
             unit.source = source.map(Source::Uri);
             unit.references = parsed_refs;
 
+            // Validate before printing so the user gets a clear error rather than
+            // silently producing an invalid unit.
             if let Err(e) = validate_unit(&unit) {
                 fatal(&format!("unit is invalid: {}", e));
             }
@@ -172,6 +189,7 @@ fn main() {
     }
 }
 
+/// Read the full contents of a file, or stdin when the path is `"-"`.
 fn read_input(path: &PathBuf) -> String {
     if path.to_str() == Some("-") {
         let mut buf = String::new();
@@ -186,6 +204,11 @@ fn read_input(path: &PathBuf) -> String {
     }
 }
 
+/// Parse a JSON string as either an array of units or a single unit.
+///
+/// Tries the array form first (covering the common "graph file" case), then
+/// falls back to parsing as a single object. Exits with an error message if
+/// neither parse succeeds.
 fn parse_units(json: &str) -> Vec<SemanticUnit> {
     // Try array first, then single object.
     if let Ok(units) = serde_json::from_str::<Vec<SemanticUnit>>(json) {
@@ -200,6 +223,7 @@ fn parse_units(json: &str) -> Vec<SemanticUnit> {
     }
 }
 
+/// Print an error message to stderr and exit with code 2.
 fn fatal(msg: &str) -> ! {
     eprintln!("sweft: {}", msg);
     process::exit(2);

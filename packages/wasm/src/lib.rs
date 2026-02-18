@@ -1,5 +1,32 @@
+//! WebAssembly bindings for the SemanticWeft core library.
+//!
+//! Exposes [`validate`], [`new_unit`], and [`render`] to JavaScript/TypeScript
+//! via `wasm-bindgen`. Compile with `wasm-pack build` to produce an npm-ready
+//! package that works in browsers, Node.js, and any other WASM host.
+//!
+//! # Usage (JavaScript)
+//!
+//! ```js
+//! import init, { validate, new_unit, render } from './semanticweft_wasm.js';
+//! await init();
+//!
+//! // Create a unit.
+//! const json = new_unit('assertion', 'CO₂ is rising.', 'did:key:z6Mk...');
+//!
+//! // Validate it (throws a string on error).
+//! validate(json);
+//!
+//! // Render it as human-readable text.
+//! console.log(render(json));
+//! ```
+
 use wasm_bindgen::prelude::*;
 
+/// One-time initialisation called at the start of every exported function.
+///
+/// Installs the `console_error_panic_hook` when the feature is enabled so
+/// that Rust panics are forwarded to the browser console as readable errors
+/// rather than appearing as generic "unreachable" WASM traps.
 fn setup() {
     #[cfg(feature = "console_error_panic_hook")]
     console_error_panic_hook::set_once();
@@ -91,6 +118,9 @@ pub fn new_unit(
 /// Render a unit or graph as human-readable text.
 ///
 /// `json` must be either a single unit object or an array of unit objects.
+///
+/// A single unit is rendered in full detail; an array is summarised as a
+/// grouped graph view.
 ///
 /// ```js
 /// const text = render(unitJson);
