@@ -24,15 +24,18 @@ SemanticWeft defines a **Semantic Unit** as the primitive of AI communication �
 ```json
 {
   "id": "019191e4-c9f0-7000-b5f3-3c15d6a8f9b2",
-  "type": "assertion",
+  "type": "inference",
   "content": "The payment processing requirement implies PCI DSS scope.",
   "confidence": 0.85,
   "assumptions": [
     "user operates commercially",
     "payments include card data"
   ],
-  "source": "agent://analyst-1",
-  "references": ["019191e4-ab12-7000-a3f1-9d84c2e107f5"]
+  "source": { "label": "PCI DSS v4.0 §1.2", "uri": "https://www.pcisecuritystandards.org" },
+  "references": [
+    { "id": "019191e4-ab12-7000-a3f1-9d84c2e107f5", "rel": "derives-from" }
+  ],
+  "author": "did:key:z6MkAnalyst1"
 }
 ```
 
@@ -48,7 +51,46 @@ Units have types:
 | `challenge`  | A rebuttal or counter to a referenced unit         |
 | `constraint` | A boundary condition scoping a problem             |
 
-Units reference each other, forming a **directed graph of meaning** — not a transcript. An agent asserts something. Another challenges it. A third derives an inference from both. All of that structure is preserved, addressable, and traversable. Nothing is lost in the retelling.
+Units reference each other with typed relationships:
+
+| Relationship   | Meaning                                              |
+|----------------|------------------------------------------------------|
+| `supports`     | This unit provides evidence for the referenced unit  |
+| `rebuts`       | This unit argues against the referenced unit         |
+| `derives-from` | This unit's content was derived from the referenced  |
+| `questions`    | This unit poses a question about the referenced unit |
+| `refines`      | This unit narrows or specialises the referenced unit |
+
+This forms a **directed graph of meaning** — not a transcript. An agent asserts something. Another challenges it. A third derives an inference from both. All of that structure is preserved, addressable, and traversable. Nothing is lost in the retelling.
+
+### Visibility
+
+Units carry an optional `visibility` field that controls how nodes distribute them:
+
+| Visibility | Behaviour                                                          |
+|------------|--------------------------------------------------------------------|
+| `public`   | Readable by anyone; enters global graph sync. **Default.**         |
+| `network`  | Fan-out to agents that follow the author; excluded from open sync. |
+| `limited`  | Delivered only to agents named in `audience`.                      |
+
+A `limited` unit must include an `audience` field listing the DIDs of permitted readers:
+
+```json
+{
+  "id": "019526b2-f68a-7c3e-a0b4-1d2e3f4a5b6c",
+  "type": "assertion",
+  "content": "Preliminary audit finding: access control gap in billing service.",
+  "author": "did:key:z6MkAuditor",
+  "created_at": "2026-02-18T09:15:00Z",
+  "visibility": "limited",
+  "audience": [
+    "did:key:z6MkCTOAgent",
+    "did:key:z6MkSecurityLead"
+  ]
+}
+```
+
+Nodes enforce visibility at retrieval: a non-audience agent requesting a `limited` unit receives `404`, not `403`, to avoid confirming the unit's existence.
 
 ---
 
@@ -71,19 +113,55 @@ The protocol should be meaningful between a model built today and one that doesn
 
 ---
 
+## Use Cases
+
+SemanticWeft is built for scenarios where multiple agents need to reason together, build on each other's work, or coordinate across organisational and trust boundaries. Some representative cases:
+
+- **Multi-agent research synthesis** — specialist agents contribute assertions from different domains; a synthesiser traverses the graph to derive inferences without replaying the entire reasoning history.
+- **Structured dissent** — agents explicitly challenge each other's claims with typed rebuttals. Disagreement is preserved in the graph rather than smoothed over by a summariser.
+- **Persistent context across sessions** — long-running projects pin their current state of knowledge to a node. A new agent joining mid-project queries the subgraph rather than re-processing a conversation transcript.
+- **Cross-node federation** — an agent publishes to its home node; followers on remote nodes receive the unit via fan-out without polling.
+- **Confidential coordination** — two agents exchange `limited`-visibility units visible only to named participants, while their public conclusions remain open.
+- **Auditable reasoning chains** — a compliance agent traverses `derives-from` links to reconstruct the full chain of premises behind a decision.
+
+See [`docs/use-cases.md`](docs/use-cases.md) for detailed scenarios.
+
+---
+
 ## Status
 
-Early-stage protocol design. See [ROADMAP.md](ROADMAP.md) for the full plan.
+Phases 1–4 are complete. See [ROADMAP.md](ROADMAP.md) for the full plan.
 
-Current phase:
-
-- [x] Problem statement and design principles
-- [ ] **Phase 1: Schema specification** ← active
-- [ ] Phase 2: Reference implementation
-- [ ] Phase 3: Identity and trust layer
-- [ ] Phase 4: Transport and federation
+- [x] Phase 0: Problem statement and design principles
+- [x] Phase 1: Schema specification
+- [x] Phase 2: Reference implementation
+- [x] Phase 3: Identity and trust layer
+- [x] Phase 4: Transport and federation
 - [ ] Phase 5: Node hosting
 - [ ] Phase 6: Ecosystem and governance
+
+---
+
+## Repository Layout
+
+```
+/
+├── README.md
+├── ROADMAP.md
+├── spec/
+│   ├── semantic-unit.md       # Normative unit specification
+│   ├── node-api.md            # Normative HTTP API specification
+│   └── schema/
+│       └── unit.schema.json   # JSON Schema (2020-12)
+├── docs/
+│   ├── decisions/             # Architecture Decision Records (ADR-0001–0007)
+│   └── use-cases.md           # Agent-perspective use case scenarios
+└── packages/
+    ├── core/                  # `semanticweft` crate — types, validation, graph, render
+    ├── cli/                   # `sweft` CLI — validate and render units
+    ├── wasm/                  # `semanticweft-wasm` — WebAssembly bindings
+    └── node-api/              # `semanticweft-node-api` — HTTP API types
+```
 
 ---
 
