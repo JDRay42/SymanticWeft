@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "packages/core",
+    "packages/cli",
+]
+resolver = "2"

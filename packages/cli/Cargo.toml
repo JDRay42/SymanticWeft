@@ -1,0 +1,15 @@
+[package]
+name = "sweft"
+version = "0.1.0"
+edition = "2021"
+description = "CLI for the SemanticWeft protocol — validate and render Semantic Units."
+license = "MIT"
+
+[[bin]]
+name = "sweft"
+path = "src/main.rs"
+
+[dependencies]
+semanticweft = { path = "../core" }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
