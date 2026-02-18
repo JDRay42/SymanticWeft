@@ -23,7 +23,7 @@ SemanticWeft defines a **Semantic Unit** as the primitive of AI communication â€
 
 ```json
 {
-  "id": "unit_abc123",
+  "id": "019191e4-c9f0-7000-b5f3-3c15d6a8f9b2",
   "type": "assertion",
   "content": "The payment processing requirement implies PCI DSS scope.",
   "confidence": 0.85,
@@ -32,9 +32,11 @@ SemanticWeft defines a **Semantic Unit** as the primitive of AI communication â€
     "payments include card data"
   ],
   "source": "agent://analyst-1",
-  "references": ["unit_def456"]
+  "references": ["019191e4-ab12-7000-a3f1-9d84c2e107f5"]
 }
 ```
+
+Unit IDs are [UUIDv7](https://www.rfc-editor.org/rfc/rfc9562#name-uuid-version-7) (RFC 9562). UUIDv7 is lexicographically sortable by creation time, requires no coordination to generate, and is an IETF standard â€” making it a natural fit for a decentralized, open protocol. The embedded millisecond timestamp reflects *creation time*, not submission time.
 
 Units have types:
 
