@@ -42,9 +42,10 @@ This document maps the full development arc of the SemanticWeft protocol — fro
 - [ ] **Human-readable rendering** — generate natural language summaries from unit graphs (the "expression layer")
 - [ ] **Validation CLI** — check a unit or a graph of units against the spec
 
+**Language: Rust.** The reference implementation is written in Rust. Reasons: native binaries with no runtime dependency, first-class WebAssembly compilation (one crate, every ecosystem), and a type system that makes protocol correctness hard to undermine accidentally. Distributed as `sweft` (CLI) and the `semanticweft` crate.
+
 **Open decisions:**
-- Primary language for the reference implementation (TypeScript is the likely choice given the AI tooling ecosystem; Python as a secondary target)
-- Packaging and distribution strategy
+- Packaging and distribution strategy (crates.io for the library; GitHub Releases for pre-built CLI binaries; WASM build for browser/embedding use)
 
 ---
 
