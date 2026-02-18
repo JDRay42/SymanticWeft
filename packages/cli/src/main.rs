@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process;
 
 use clap::{Parser, Subcommand};
-use semanticweft::{validate_unit, Graph, SemanticUnit};
+use semanticweft::{validate_unit, Graph, Reference, RelType, SemanticUnit, Source, UnitType};
 
 /// sweft — SemanticWeft protocol CLI
 ///
@@ -38,6 +38,49 @@ enum Command {
     Render {
         /// Path to a JSON file, or `-` for stdin.
         file: PathBuf,
+    },
+
+    /// Create a new Semantic Unit and print it as JSON.
+    ///
+    /// Generates a UUIDv7 id and UTC timestamp automatically. The result is
+    /// printed to stdout and can be piped directly into `sweft validate` or
+    /// redirected to a file.
+    ///
+    /// Examples:
+    ///   sweft new -t assertion -c "PCI DSS applies." -a "agent://analyst-1"
+    ///   sweft new -t inference -c "..." -a "agent://x" --confidence 0.8 \
+    ///     --ref 019526b2-f68a-7c3e-a0b4-1d2e3f4a5b6d:derives-from
+    New {
+        /// Unit type: assertion | question | inference | challenge | constraint
+        #[arg(short = 't', long = "type", value_name = "TYPE")]
+        unit_type: UnitType,
+
+        /// The human-readable statement this unit expresses.
+        #[arg(short = 'c', long, value_name = "TEXT")]
+        content: String,
+
+        /// Identifier of the agent creating this unit.
+        #[arg(short = 'a', long, value_name = "ID")]
+        author: String,
+
+        /// Degree of belief, 0.0–1.0 (recommended for assertion and inference).
+        #[arg(long, value_name = "FLOAT")]
+        confidence: Option<f64>,
+
+        /// A condition that must hold for this unit's content to be valid.
+        /// Repeat for multiple assumptions: --assumption "..." --assumption "..."
+        #[arg(long = "assumption", value_name = "TEXT")]
+        assumptions: Vec<String>,
+
+        /// Source citation: a URI or free-form string (e.g. "Smith et al., 2024").
+        #[arg(short = 's', long, value_name = "URI_OR_CITATION")]
+        source: Option<String>,
+
+        /// A typed reference to another unit: <uuid>:<rel>.
+        /// <rel> is one of: supports | rebuts | derives-from | questions | refines
+        /// Repeat for multiple references: --ref <uuid>:<rel> --ref <uuid>:<rel>
+        #[arg(long = "ref", value_name = "UUID:REL")]
+        references: Vec<String>,
     },
 }
 
@@ -79,6 +122,52 @@ fn main() {
                 let graph = Graph::from_units(units);
                 print!("{}", semanticweft::render::render_graph(&graph));
             }
+        }
+
+        Command::New {
+            unit_type,
+            content,
+            author,
+            confidence,
+            assumptions,
+            source,
+            references,
+        } => {
+            let parsed_refs = if references.is_empty() {
+                None
+            } else {
+                let mut out = Vec::with_capacity(references.len());
+                for raw in &references {
+                    let (id_str, rel_str) = raw.split_once(':').unwrap_or_else(|| {
+                        fatal(&format!(
+                            "invalid --ref {:?}: expected format <uuid>:<rel>",
+                            raw
+                        ))
+                    });
+                    let rel = rel_str.parse::<RelType>().unwrap_or_else(|e| fatal(&e));
+                    out.push(Reference {
+                        id: id_str.to_string(),
+                        rel,
+                    });
+                }
+                Some(out)
+            };
+
+            let mut unit = SemanticUnit::new(unit_type, content, author);
+            unit.confidence = confidence;
+            unit.assumptions = if assumptions.is_empty() {
+                None
+            } else {
+                Some(assumptions)
+            };
+            unit.source = source.map(Source::Uri);
+            unit.references = parsed_refs;
+
+            if let Err(e) = validate_unit(&unit) {
+                fatal(&format!("unit is invalid: {}", e));
+            }
+
+            println!("{}", serde_json::to_string_pretty(&unit).unwrap());
         }
     }
 }
