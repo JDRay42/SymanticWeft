@@ -1,0 +1,28 @@
+[package]
+name = "semanticweft-node"
+version = "0.1.0"
+edition = "2021"
+description = "Reference node implementation for the SemanticWeft protocol."
+license = "MIT"
+
+[[bin]]
+name = "sweft-node"
+path = "src/main.rs"
+
+[dependencies]
+semanticweft = { path = "../core" }
+semanticweft-node-api = { path = "../node-api" }
+
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+async-trait = "0.1"
+
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

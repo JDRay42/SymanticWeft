@@ -4,5 +4,6 @@ members = [
     "packages/cli",
     "packages/wasm",
     "packages/node-api",
+    "packages/node",
 ]
 resolver = "2"
