@@ -132,7 +132,7 @@ pub enum Source {
 ///
 /// Fields not defined by the spec are captured in `extensions`. Their names
 /// must match `^x-[a-z0-9]+(\.[a-z0-9]+)+$` to be valid.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SemanticUnit {
     /// UUIDv7 identifier (RFC 9562). The time component encodes creation order.
     pub id: String,

@@ -70,10 +70,10 @@ This document maps the full development arc of the SemanticWeft protocol — fro
 
 *Define how units move between agents and nodes, and how the graph grows across a network.*
 
-- [ ] **Node API specification** — HTTP endpoints for submitting and retrieving units; pagination; filtering by type, source, reference
-- [ ] **Unit submission protocol** — how an agent publishes a unit to a node
-- [ ] **Graph sync** — how nodes replicate units from each other; push vs. pull; conflict model
-- [ ] **Node discovery** — how agents and nodes find each other; bootstrapping
+- [x] **Node API specification** — HTTP endpoints for submitting and retrieving units; pagination; filtering by type, source, reference
+- [x] **Unit submission protocol** — how an agent publishes a unit to a node
+- [x] **Graph sync** — how nodes replicate units from each other; push vs. pull; conflict model
+- [x] **Node discovery** — how agents and nodes find each other; bootstrapping
 
 **Open decisions:**
 - Transport mechanism (REST/HTTP is the baseline; WebSockets or SSE for streaming; ActivityPub-style federation is worth evaluating)
