@@ -88,6 +88,12 @@ pub enum Capability {
 
     /// The `/v1/peers` endpoints are available (spec §7).
     Peers,
+
+    /// Agent registration and WebFinger discovery are available (spec §8, ADR-0007).
+    Agents,
+
+    /// Follow-graph management endpoints are available (spec §8.3, ADR-0007).
+    Follows,
 }
 
 /// Proof-of-work parameters advertised in the discovery document (ADR-0006).

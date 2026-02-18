@@ -80,6 +80,22 @@
         "$ref": "#/$defs/Reference"
       },
       "description": "Units that this unit relates to, with typed relationships. See the Reference definition and unit type rules in the normative specification."
+    },
+    "visibility": {
+      "type": "string",
+      "enum": ["public", "network", "limited"],
+      "default": "public",
+      "description": "Access control for this unit. 'public': readable by anyone, enters global sync. 'network': delivered to the author's followers only. 'limited': delivered only to agents listed in 'audience'. When absent, 'public' is assumed. Immutable once set."
+    },
+    "audience": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "description": "DID of a permitted recipient."
+      },
+      "description": "Required when visibility is 'limited'. Lists the DIDs of agents permitted to read this unit. MUST be absent for 'public' and 'network' units. The publishing agent is always an implicit member."
     }
   },
   "patternProperties": {
@@ -88,6 +104,16 @@
     }
   },
   "additionalProperties": false,
+  "if": {
+    "properties": { "visibility": { "const": "limited" } },
+    "required": ["visibility"]
+  },
+  "then": {
+    "required": ["audience"]
+  },
+  "else": {
+    "not": { "required": ["audience"] }
+  },
   "$defs": {
     "Reference": {
       "type": "object",

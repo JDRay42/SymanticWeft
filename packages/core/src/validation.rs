@@ -14,7 +14,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use thiserror::Error;
 
-use crate::types::SemanticUnit;
+use crate::types::{SemanticUnit, Visibility};
 
 /// Errors returned when a [`SemanticUnit`] fails conformance validation.
 ///
@@ -54,6 +54,18 @@ pub enum ValidationError {
          (e.g. x-com.example.myfield) and be lowercase"
     )]
     InvalidExtensionFieldName(String),
+
+    #[error("audience is required and must be non-empty when visibility is \"limited\"")]
+    AudienceRequiredForLimited,
+
+    #[error("audience must be absent when visibility is \"public\" or \"network\"")]
+    AudienceForbiddenForNonLimited,
+
+    #[error("audience must contain at least one item when present")]
+    EmptyAudience,
+
+    #[error("audience item at index {0} must not be empty")]
+    EmptyAudienceItem(usize),
 }
 
 /// Validate a [`SemanticUnit`] against the normative specification (§8).
@@ -117,6 +129,34 @@ pub fn validate_unit(unit: &SemanticUnit) -> Result<(), ValidationError> {
         }
     }
 
+    // §4.5–4.6 — visibility/audience co-validation rules.
+    match &unit.visibility {
+        Some(Visibility::Limited) => {
+            // audience MUST be present and non-empty for limited units.
+            match &unit.audience {
+                None => {
+                    return Err(ValidationError::AudienceRequiredForLimited);
+                }
+                Some(a) if a.is_empty() => {
+                    return Err(ValidationError::AudienceRequiredForLimited);
+                }
+                Some(audience) => {
+                    for (i, item) in audience.iter().enumerate() {
+                        if item.is_empty() {
+                            return Err(ValidationError::EmptyAudienceItem(i));
+                        }
+                    }
+                }
+            }
+        }
+        None | Some(Visibility::Public) | Some(Visibility::Network) => {
+            // audience MUST be absent for public and network units.
+            if unit.audience.is_some() {
+                return Err(ValidationError::AudienceForbiddenForNonLimited);
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -167,6 +207,8 @@ mod tests {
             assumptions: None,
             source: None,
             references: None,
+            visibility: None,
+            audience: None,
             extensions: HashMap::new(),
         }
     }
@@ -287,6 +329,60 @@ mod tests {
         u.extensions
             .insert("x-org.semanticweft.priority".into(), serde_json::json!("high"));
         assert_eq!(validate_unit(&u), Ok(()));
+    }
+
+    #[test]
+    fn limited_visibility_requires_audience() {
+        let mut u = minimal();
+        u.visibility = Some(crate::types::Visibility::Limited);
+        assert_eq!(validate_unit(&u), Err(ValidationError::AudienceRequiredForLimited));
+    }
+
+    #[test]
+    fn limited_visibility_empty_audience_rejected() {
+        let mut u = minimal();
+        u.visibility = Some(crate::types::Visibility::Limited);
+        u.audience = Some(vec![]);
+        assert_eq!(validate_unit(&u), Err(ValidationError::AudienceRequiredForLimited));
+    }
+
+    #[test]
+    fn limited_visibility_with_valid_audience_accepted() {
+        let mut u = minimal();
+        u.visibility = Some(crate::types::Visibility::Limited);
+        u.audience = Some(vec!["did:key:z6MkHaXXX".into()]);
+        assert_eq!(validate_unit(&u), Ok(()));
+    }
+
+    #[test]
+    fn limited_visibility_empty_audience_item_rejected() {
+        let mut u = minimal();
+        u.visibility = Some(crate::types::Visibility::Limited);
+        u.audience = Some(vec!["did:key:z6Mk".into(), String::new()]);
+        assert_eq!(validate_unit(&u), Err(ValidationError::EmptyAudienceItem(1)));
+    }
+
+    #[test]
+    fn public_visibility_with_audience_rejected() {
+        let mut u = minimal();
+        u.visibility = Some(crate::types::Visibility::Public);
+        u.audience = Some(vec!["did:key:z6Mk".into()]);
+        assert_eq!(validate_unit(&u), Err(ValidationError::AudienceForbiddenForNonLimited));
+    }
+
+    #[test]
+    fn network_visibility_with_audience_rejected() {
+        let mut u = minimal();
+        u.visibility = Some(crate::types::Visibility::Network);
+        u.audience = Some(vec!["did:key:z6Mk".into()]);
+        assert_eq!(validate_unit(&u), Err(ValidationError::AudienceForbiddenForNonLimited));
+    }
+
+    #[test]
+    fn no_visibility_with_audience_rejected() {
+        let mut u = minimal();
+        u.audience = Some(vec!["did:key:z6Mk".into()]);
+        assert_eq!(validate_unit(&u), Err(ValidationError::AudienceForbiddenForNonLimited));
     }
 
     #[test]

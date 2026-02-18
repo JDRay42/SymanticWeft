@@ -227,6 +227,8 @@ mod tests {
                         .collect(),
                 )
             },
+            visibility: None,
+            audience: None,
             extensions: HashMap::new(),
         }
     }

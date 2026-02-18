@@ -150,6 +150,51 @@ pub enum Source {
     },
 }
 
+/// Controls who may read a unit and how nodes distribute it.
+///
+/// When absent, `Public` is assumed (backwards-compatible default).
+/// Serialises as a lowercase string. See `spec/semantic-unit.md §4.5`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Visibility {
+    /// Readable by anyone; enters global sync. Default.
+    #[default]
+    Public,
+    /// Delivered only to agents that follow the author.
+    Network,
+    /// Delivered only to agents listed in `audience`.
+    Limited,
+}
+
+/// Formats the visibility as its lowercase wire-format string.
+impl std::fmt::Display for Visibility {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Visibility::Public => write!(f, "public"),
+            Visibility::Network => write!(f, "network"),
+            Visibility::Limited => write!(f, "limited"),
+        }
+    }
+}
+
+/// Parses a [`Visibility`] from its lowercase wire-format string.
+///
+/// Returns `Err` with a descriptive message if the string is not recognised.
+impl std::str::FromStr for Visibility {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "public" => Ok(Visibility::Public),
+            "network" => Ok(Visibility::Network),
+            "limited" => Ok(Visibility::Limited),
+            _ => Err(format!(
+                "unknown visibility {:?}; expected one of: public, network, limited",
+                s
+            )),
+        }
+    }
+}
+
 /// A Semantic Unit — the fundamental record type of the SemanticWeft protocol.
 ///
 /// Units are immutable once created. An agent wishing to revise a unit creates
@@ -200,6 +245,17 @@ pub struct SemanticUnit {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub references: Option<Vec<Reference>>,
 
+    /// Access control for this unit. Absent means `Public`.
+    /// Immutable once set. See `spec/semantic-unit.md §4.5`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<Visibility>,
+
+    /// Recipients permitted to read this unit.
+    /// Required when `visibility` is `Limited`; must be absent otherwise.
+    /// See `spec/semantic-unit.md §4.6`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audience: Option<Vec<String>>,
+
     /// Extension fields (`x-<reverse-domain>.<name>`).
     ///
     /// Captured via `#[serde(flatten)]` so they round-trip cleanly through
@@ -228,6 +284,8 @@ impl SemanticUnit {
             assumptions: None,
             source: None,
             references: None,
+            visibility: None,
+            audience: None,
             extensions: HashMap::new(),
         }
     }
