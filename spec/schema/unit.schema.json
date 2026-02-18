@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semanticweft.org/schema/unit/v1",
+  "title": "SemanticUnit",
+  "description": "A Semantic Unit — the fundamental record type in the SemanticWeft protocol.",
+  "type": "object",
+  "required": ["id", "type", "content", "created_at", "author"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "description": "UUIDv7 identifier (RFC 9562) for this unit. The time component encodes creation order; the value is globally unique."
+    },
+    "type": {
+      "type": "string",
+      "enum": ["assertion", "question", "inference", "challenge", "constraint"],
+      "description": "The semantic role of this unit. Determines how its content should be interpreted and how it may validly reference other units."
+    },
+    "content": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The human-readable statement this unit expresses. Must be intelligible as a standalone claim without consulting referenced units."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of when this unit was created. SHOULD be in UTC."
+    },
+    "author": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifier of the agent that created this unit. SHOULD be a DID (Phase 3). In Phase 1, any stable, non-empty string is valid."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "The author's degree of belief in this unit's content. 0.0 = no confidence; 1.0 = certainty. Absence means the author chose not to quantify. RECOMMENDED for assertion and inference types."
+    },
+    "assumptions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Conditions that must hold for this unit's content to be valid. Each item is a complete, human-readable statement. Stating assumptions explicitly allows others to challenge the assumption rather than the conclusion."
+    },
+    "source": {
+      "description": "A citation or provenance reference for this unit's content.",
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "description": "A URI or free-form citation string."
+        },
+        {
+          "type": "object",
+          "required": ["label"],
+          "additionalProperties": false,
+          "properties": {
+            "label": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Human-readable citation text."
+            },
+            "uri": {
+              "type": "string",
+              "format": "uri",
+              "description": "Dereferenceable URI for the source document."
+            }
+          }
+        }
+      ]
+    },
+    "references": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/Reference"
+      },
+      "description": "Units that this unit relates to, with typed relationships. See the Reference definition and unit type rules in the normative specification."
+    }
+  },
+  "patternProperties": {
+    "^x-[a-z0-9]+(\\.[a-z0-9]+)+": {
+      "description": "Extension field. MUST be prefixed with 'x-' followed by a reverse-domain namespace (e.g. x-com.example.myfield). Extension field names MUST be lowercase."
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "Reference": {
+      "type": "object",
+      "required": ["id", "rel"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "description": "UUIDv7 of the referenced unit."
+        },
+        "rel": {
+          "type": "string",
+          "enum": ["supports", "rebuts", "derives-from", "questions", "refines"],
+          "description": "The relationship this unit has to the referenced unit. See the normative specification for semantics."
+        }
+      }
+    }
+  }
+}
