@@ -73,13 +73,17 @@ The protocol should be meaningful between a model built today and one that doesn
 
 ## Status
 
-Early-stage protocol design. Current state:
+Early-stage protocol design. See [ROADMAP.md](ROADMAP.md) for the full plan.
+
+Current phase:
 
 - [x] Problem statement and design principles
-- [ ] Formal schema specification
-- [ ] Reference implementation
-- [ ] Identity and trust layer
-- [ ] Node hosting specification
+- [ ] **Phase 1: Schema specification** ← active
+- [ ] Phase 2: Reference implementation
+- [ ] Phase 3: Identity and trust layer
+- [ ] Phase 4: Transport and federation
+- [ ] Phase 5: Node hosting
+- [ ] Phase 6: Ecosystem and governance
 
 ---
 
