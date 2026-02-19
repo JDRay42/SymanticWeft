@@ -2,29 +2,75 @@
 
 use serde::{Deserialize, Serialize};
 
-/// A peer node entry: a stable identifier and the base URL of its API.
+fn default_reputation() -> f32 {
+    0.5
+}
+
+/// A peer node entry: stable identifier, API base URL, and local reputation.
 ///
 /// Used in [`PeersResponse`] and as the body for `POST /v1/peers`.
+///
+/// # Reputation
+///
+/// `reputation` is this node's *local assessment* of the peer, in `[0.0, 1.0]`.
+/// It defaults to `0.5` (neutral) and is managed by the reputation system
+/// described in ADR-0008. Senders SHOULD include their reputation score for
+/// the peer when sharing peer lists; receivers weight the incoming score by
+/// their own trust in the sender.
 ///
 /// # Example
 ///
 /// ```json
 /// {
-///   "node_id": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooW",
-///   "api_base": "https://peer.example.com/v1"
+///   "node_id":    "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooW",
+///   "api_base":   "https://peer.example.com/v1",
+///   "reputation": 0.85,
+///   "last_seen":  "2026-02-19T14:32:00Z"
 /// }
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PeerInfo {
-    /// Stable identifier for the peer. SHOULD be a DID.
+    /// Stable identifier for the peer. SHOULD be a `did:key` DID whose embedded
+    /// public key is used for identity verification (ADR-0001, ADR-0008).
     pub node_id: String,
 
     /// API base URL of the peer (e.g., `"https://peer.example.com/v1"`).
+    /// This URL may change if the node moves servers; the `node_id` is the
+    /// stable identity anchor.
     pub api_base: String,
+
+    /// This node's local reputation score for the peer, in `[0.0, 1.0]`.
+    ///
+    /// Defaults to `0.5` (neutral). Adjusted over time by the reputation
+    /// system (ADR-0008, Phase 2). Included when sharing peer lists so that
+    /// receiving nodes can apply weighted-merge reconciliation.
+    #[serde(default = "default_reputation")]
+    pub reputation: f32,
+
+    /// ISO 8601 timestamp of the most recent successful contact with this peer.
+    ///
+    /// Updated whenever the peer is successfully reached (sync, verify, or
+    /// peer-exchange). Used as a tiebreaker in eviction: when the peer list
+    /// is full, the lowest-reputation peer is evicted; ties are broken by
+    /// oldest `last_seen`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen: Option<String>,
+}
+
+impl PeerInfo {
+    /// Construct a new `PeerInfo` with neutral reputation and no `last_seen`.
+    pub fn new(node_id: impl Into<String>, api_base: impl Into<String>) -> Self {
+        Self {
+            node_id: node_id.into(),
+            api_base: api_base.into(),
+            reputation: 0.5,
+            last_seen: None,
+        }
+    }
 }
 
 /// Response body for `GET /v1/peers`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PeersResponse {
     /// Known peer nodes.
     pub peers: Vec<PeerInfo>,
@@ -38,19 +84,32 @@ mod tests {
     fn peers_response_roundtrip() {
         let resp = PeersResponse {
             peers: vec![
-                PeerInfo {
-                    node_id: "did:key:z6MkA".into(),
-                    api_base: "https://a.example.com/v1".into(),
-                },
-                PeerInfo {
-                    node_id: "did:key:z6MkB".into(),
-                    api_base: "https://b.example.com/v1".into(),
-                },
+                PeerInfo::new("did:key:z6MkA", "https://a.example.com/v1"),
+                PeerInfo::new("did:key:z6MkB", "https://b.example.com/v1"),
             ],
         };
         let json = serde_json::to_string(&resp).unwrap();
         let back: PeersResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(back, resp);
+    }
+
+    #[test]
+    fn reputation_defaults_to_half() {
+        let json = r#"{"node_id":"did:key:z6MkA","api_base":"https://a.example.com/v1"}"#;
+        let p: PeerInfo = serde_json::from_str(json).unwrap();
+        assert!((p.reputation - 0.5).abs() < f32::EPSILON);
+        assert!(p.last_seen.is_none());
+    }
+
+    #[test]
+    fn reputation_roundtrip() {
+        let mut p = PeerInfo::new("did:key:z6MkA", "https://a.example.com/v1");
+        p.reputation = 0.85;
+        p.last_seen = Some("2026-02-19T14:32:00Z".into());
+        let json = serde_json::to_string(&p).unwrap();
+        let back: PeerInfo = serde_json::from_str(&json).unwrap();
+        assert!((back.reputation - 0.85).abs() < 1e-5);
+        assert_eq!(back.last_seen.as_deref(), Some("2026-02-19T14:32:00Z"));
     }
 
     #[test]

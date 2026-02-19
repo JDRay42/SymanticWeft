@@ -26,6 +26,7 @@ struct Inner {
     follows: HashSet<(String, String)>,
     peers: HashMap<String, PeerInfo>,
     cursors: HashMap<String, String>,
+    node_config: HashMap<String, String>,
 }
 
 impl Inner {
@@ -36,6 +37,7 @@ impl Inner {
             follows: HashSet::new(),
             peers: HashMap::new(),
             cursors: HashMap::new(),
+            node_config: HashMap::new(),
         }
     }
 }
@@ -230,13 +232,46 @@ impl Storage for MemoryStorage {
 
     async fn add_peer(&self, peer: &PeerInfo) -> Result<(), StorageError> {
         let mut inner = self.inner.write().unwrap();
-        inner.peers.insert(peer.node_id.clone(), peer.clone());
+        if let Some(existing) = inner.peers.get_mut(&peer.node_id) {
+            // Update api_base and last_seen; preserve reputation.
+            existing.api_base = peer.api_base.clone();
+            existing.last_seen = peer.last_seen.clone();
+        } else {
+            inner.peers.insert(peer.node_id.clone(), peer.clone());
+        }
+        Ok(())
+    }
+
+    async fn remove_peer(&self, node_id: &str) -> Result<(), StorageError> {
+        let mut inner = self.inner.write().unwrap();
+        inner.peers.remove(node_id);
         Ok(())
     }
 
     async fn list_peers(&self) -> Result<Vec<PeerInfo>, StorageError> {
         let inner = self.inner.read().unwrap();
-        Ok(inner.peers.values().cloned().collect())
+        let mut peers: Vec<PeerInfo> = inner.peers.values().cloned().collect();
+        // Sort by reputation descending, then node_id ascending for stability.
+        peers.sort_by(|a, b| {
+            b.reputation
+                .partial_cmp(&a.reputation)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.node_id.cmp(&b.node_id))
+        });
+        Ok(peers)
+    }
+
+    // --- Node configuration -------------------------------------------------
+
+    async fn get_node_config(&self, key: &str) -> Result<Option<String>, StorageError> {
+        let inner = self.inner.read().unwrap();
+        Ok(inner.node_config.get(key).cloned())
+    }
+
+    async fn set_node_config(&self, key: &str, value: &str) -> Result<(), StorageError> {
+        let mut inner = self.inner.write().unwrap();
+        inner.node_config.insert(key.to_string(), value.to_string());
+        Ok(())
     }
 
     // --- Sync cursors --------------------------------------------------------
@@ -355,16 +390,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn peer_roundtrip() {
+    async fn peer_roundtrip_with_reputation() {
         let s = MemoryStorage::new();
-        let p = PeerInfo {
-            node_id: "did:key:z6MkPeer".into(),
-            api_base: "https://peer.example.com/v1".into(),
-        };
+        let p = PeerInfo::new("did:key:z6MkPeer", "https://peer.example.com/v1");
         s.add_peer(&p).await.unwrap();
         let peers = s.list_peers().await.unwrap();
         assert_eq!(peers.len(), 1);
-        assert_eq!(peers[0].node_id, p.node_id);
+        assert!((peers[0].reputation - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn add_peer_preserves_reputation_on_update() {
+        let s = MemoryStorage::new();
+        let mut p = PeerInfo::new("did:key:z6MkPeer", "https://peer.example.com/v1");
+        p.reputation = 0.8;
+        s.add_peer(&p).await.unwrap();
+
+        // Re-announce with new URL; reputation should be preserved.
+        let updated = PeerInfo::new("did:key:z6MkPeer", "https://new.example.com/v1");
+        s.add_peer(&updated).await.unwrap();
+
+        let peers = s.list_peers().await.unwrap();
+        assert_eq!(peers[0].api_base, "https://new.example.com/v1");
+        assert!((peers[0].reputation - 0.8).abs() < f32::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn remove_peer() {
+        let s = MemoryStorage::new();
+        s.add_peer(&PeerInfo::new("did:key:z6MkPeer", "https://peer.example.com/v1"))
+            .await
+            .unwrap();
+        s.remove_peer("did:key:z6MkPeer").await.unwrap();
+        assert!(s.list_peers().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn node_config_roundtrip() {
+        let s = MemoryStorage::new();
+        assert!(s.get_node_config("mykey").await.unwrap().is_none());
+        s.set_node_config("mykey", "myvalue").await.unwrap();
+        assert_eq!(
+            s.get_node_config("mykey").await.unwrap().as_deref(),
+            Some("myvalue")
+        );
     }
 
     #[tokio::test]
