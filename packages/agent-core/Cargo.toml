@@ -1,0 +1,18 @@
+[package]
+name = "semanticweft-agent-core"
+version = "0.1.0"
+edition = "2021"
+description = "Pure-logic agent identity and addressing for SemanticWeft. No I/O; compiles to native or WASM."
+license = "MIT"
+
+[dependencies]
+bs58 = "0.5"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+serde_json = "1"
+thiserror = "1"
+urlencoding = "2"
+
+# On wasm32 targets, delegate randomness to the JS runtime.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
