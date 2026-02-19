@@ -83,6 +83,9 @@ pub async fn submit(
     Json(unit): Json<SemanticUnit>,
 ) -> Result<impl IntoResponse, AppError> {
     validate_unit(&unit).map_err(|e| AppError::UnprocessableEntity(e.to_string()))?;
+    if unit.proof.is_some() {
+        semanticweft::verify_proof(&unit).map_err(|e| AppError::BadRequest(e.to_string()))?;
+    }
     state.storage.put_unit(&unit).await?;
 
     // Local and remote fan-out run together in a detached task so the HTTP
@@ -541,5 +544,96 @@ fn build_filter(params: UnitQueryParams, visibilities: Vec<Visibility>) -> UnitF
         after: params.after,
         limit,
         visibilities,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+    use tower::ServiceExt;
+    use semanticweft::{sign_unit, SemanticUnit, UnitType};
+
+    use crate::config::NodeConfig;
+    use crate::router::build_router;
+    use crate::storage::memory::MemoryStorage;
+
+    fn build_app() -> axum::Router {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let config = NodeConfig::from_env();
+        build_router(storage, config)
+    }
+
+    fn make_unit() -> SemanticUnit {
+        SemanticUnit::new(
+            UnitType::Assertion,
+            "Test content for proof integration test.",
+            "did:key:z6MkTest",
+        )
+    }
+
+    fn make_signing_key_and_did() -> (SigningKey, String) {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+        let pub_bytes = verifying_key.to_bytes();
+        let mut multicodec = vec![0xed_u8, 0x01];
+        multicodec.extend_from_slice(&pub_bytes);
+        let did = format!("did:key:z{}", bs58::encode(&multicodec).into_string());
+        (signing_key, did)
+    }
+
+    #[tokio::test]
+    async fn submit_unit_without_proof_returns_201() {
+        let app = build_app();
+        let unit = make_unit();
+        let body = serde_json::to_string(&unit).unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/units")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn submit_unit_with_valid_proof_returns_201() {
+        let app = build_app();
+        let mut unit = make_unit();
+        let (signing_key, did) = make_signing_key_and_did();
+        sign_unit(&mut unit, &signing_key, &did).unwrap();
+        let body = serde_json::to_string(&unit).unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/units")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn submit_unit_with_tampered_proof_returns_400() {
+        let app = build_app();
+        let mut unit = make_unit();
+        let (signing_key, did) = make_signing_key_and_did();
+        sign_unit(&mut unit, &signing_key, &did).unwrap();
+        // Tamper with content after signing
+        unit.content = "tampered content".into();
+        let body = serde_json::to_string(&unit).unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/units")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }
