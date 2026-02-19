@@ -18,6 +18,7 @@
 //! See [`config::NodeConfig::from_env`] for the full list.
 
 mod config;
+mod middleware;
 mod error;
 mod federation;
 mod handlers;
