@@ -66,6 +66,9 @@ pub enum ValidationError {
 
     #[error("audience item at index {0} must not be empty")]
     EmptyAudienceItem(usize),
+
+    #[error("proof shape is invalid: {0}")]
+    InvalidProofShape(String),
 }
 
 /// Validate a [`SemanticUnit`] against the normative specification (§8).
@@ -157,6 +160,26 @@ pub fn validate_unit(unit: &SemanticUnit) -> Result<(), ValidationError> {
         }
     }
 
+    // §proof — if present, validate shape (not cryptographic correctness).
+    if let Some(proof) = &unit.proof {
+        if proof.method.is_empty() {
+            return Err(ValidationError::InvalidProofShape(
+                "method must not be empty".into(),
+            ));
+        }
+        validate_timestamp(&proof.created).map_err(|_| {
+            ValidationError::InvalidProofShape(format!(
+                "created {:?} is not a valid ISO 8601 date-time",
+                proof.created
+            ))
+        })?;
+        if !proof.value.starts_with('z') {
+            return Err(ValidationError::InvalidProofShape(
+                "value must start with 'z' (multibase base58btc prefix)".into(),
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -209,6 +232,7 @@ mod tests {
             references: None,
             visibility: None,
             audience: None,
+            proof: None,
             extensions: HashMap::new(),
         }
     }
@@ -436,5 +460,64 @@ mod tests {
             unit.extensions.get("x-org.semanticweft.priority"),
             Some(&serde_json::json!("high"))
         );
+    }
+
+    #[test]
+    fn proof_absent_unit_is_valid() {
+        let u = minimal();
+        assert_eq!(validate_unit(&u), Ok(()));
+    }
+
+    #[test]
+    fn proof_present_and_valid() {
+        let mut u = minimal();
+        u.proof = Some(crate::types::Proof {
+            method: "did:key:z6MkHaXXX#z6MkHaXXX".into(),
+            created: "2026-02-18T12:00:00Z".into(),
+            value: "zSomeBase58Signature".into(),
+        });
+        assert_eq!(validate_unit(&u), Ok(()));
+    }
+
+    #[test]
+    fn proof_bad_value_prefix_rejected() {
+        let mut u = minimal();
+        u.proof = Some(crate::types::Proof {
+            method: "did:key:z6MkHaXXX#z6MkHaXXX".into(),
+            created: "2026-02-18T12:00:00Z".into(),
+            value: "BadPrefix".into(),
+        });
+        assert!(matches!(
+            validate_unit(&u),
+            Err(ValidationError::InvalidProofShape(_))
+        ));
+    }
+
+    #[test]
+    fn proof_empty_method_rejected() {
+        let mut u = minimal();
+        u.proof = Some(crate::types::Proof {
+            method: String::new(),
+            created: "2026-02-18T12:00:00Z".into(),
+            value: "zSomeBase58Signature".into(),
+        });
+        assert!(matches!(
+            validate_unit(&u),
+            Err(ValidationError::InvalidProofShape(_))
+        ));
+    }
+
+    #[test]
+    fn proof_bad_created_timestamp_rejected() {
+        let mut u = minimal();
+        u.proof = Some(crate::types::Proof {
+            method: "did:key:z6MkHaXXX#z6MkHaXXX".into(),
+            created: "not-a-date".into(),
+            value: "zSomeBase58Signature".into(),
+        });
+        assert!(matches!(
+            validate_unit(&u),
+            Err(ValidationError::InvalidProofShape(_))
+        ));
     }
 }

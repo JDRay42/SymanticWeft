@@ -207,6 +207,7 @@ mod tests {
             references: None,
             visibility: None,
             audience: None,
+            proof: None,
             extensions: HashMap::new(),
         }
     }

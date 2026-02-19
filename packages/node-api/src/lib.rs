@@ -37,3 +37,4 @@ pub use follow::{FollowEntry, FollowListResponse, FollowRequest};
 pub use node::{Capability, NodeInfo, PowParams};
 pub use peer::{PeerInfo, PeersResponse};
 pub use unit::{ListQuery, ListResponse, SubgraphQuery, SubgraphResponse, SubmitResponse};
+pub use semanticweft::Proof;

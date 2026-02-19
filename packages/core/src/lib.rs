@@ -45,5 +45,5 @@ pub mod types;
 pub mod validation;
 
 pub use graph::Graph;
-pub use types::{Reference, RelType, SemanticUnit, Source, UnitType, Visibility};
+pub use types::{Proof, Reference, RelType, SemanticUnit, Source, UnitType, Visibility};
 pub use validation::{validate_unit, ValidationError};
