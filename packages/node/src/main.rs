@@ -19,13 +19,16 @@
 
 mod config;
 mod error;
+mod federation;
 mod handlers;
 mod router;
 mod storage;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use config::NodeConfig;
+use federation::FederationSync;
 use storage::{memory::MemoryStorage, sqlite::SqliteStorage, Storage};
 
 #[tokio::main]
@@ -53,6 +56,25 @@ async fn main() {
             Arc::new(MemoryStorage::new())
         }
     };
+
+    // Spawn the background federation sync loop.
+    {
+        let sync_storage = Arc::clone(&storage);
+        let interval = Duration::from_secs(config.sync_interval_secs);
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("failed to build HTTP client for federation sync");
+
+        tracing::info!(
+            "federation: sync loop starting (interval = {}s)",
+            config.sync_interval_secs
+        );
+
+        tokio::spawn(async move {
+            FederationSync::new(client, sync_storage).run(interval).await;
+        });
+    }
 
     let app = router::build_router(storage, config.clone());
 

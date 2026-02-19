@@ -15,6 +15,7 @@ use std::net::SocketAddr;
 /// | `SWEFT_NAME` | (absent) | Human-readable node name |
 /// | `SWEFT_CONTACT` | (absent) | Operator contact email or URL |
 /// | `SWEFT_DB` | (absent = in-memory) | Path to the SQLite database file |
+/// | `SWEFT_SYNC_INTERVAL_SECS` | `60` | Seconds between federation sync rounds |
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
     /// Stable DID identifier for this node.
@@ -36,6 +37,9 @@ pub struct NodeConfig {
     /// Path to the SQLite database file.
     /// `None` means use an in-memory store (data is lost on restart).
     pub db_path: Option<String>,
+
+    /// How many seconds to wait between federation sync rounds.
+    pub sync_interval_secs: u64,
 }
 
 impl NodeConfig {
@@ -49,6 +53,11 @@ impl NodeConfig {
         let api_base = std::env::var("SWEFT_API_BASE")
             .unwrap_or_else(|_| format!("http://{bind_addr}/v1"));
 
+        let sync_interval_secs = std::env::var("SWEFT_SYNC_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(60);
+
         Self {
             node_id: std::env::var("SWEFT_NODE_ID")
                 .unwrap_or_else(|_| "did:key:z6MkDefaultNodeId".into()),
@@ -57,6 +66,7 @@ impl NodeConfig {
             contact: std::env::var("SWEFT_CONTACT").ok(),
             bind_addr,
             db_path: std::env::var("SWEFT_DB").ok(),
+            sync_interval_secs,
         }
     }
 }
