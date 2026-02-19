@@ -1579,6 +1579,7 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "semanticweft",
+ "semanticweft-agent-core",
  "semanticweft-node-api",
  "serde",
  "serde_json",

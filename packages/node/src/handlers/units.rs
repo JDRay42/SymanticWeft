@@ -9,10 +9,11 @@
 //! # Fan-out
 //!
 //! After a non-public unit is stored, [`local_fanout`] delivers it to the
-//! inboxes of eligible agents registered on this node. It runs in a detached
-//! tokio task so it never delays the HTTP response. Cross-node fan-out (for
-//! agents whose home node is elsewhere) is part of the federation phase.
+//! inboxes of eligible agents registered on this node, and [`remote_fanout`]
+//! pushes `limited` units to audience members on remote nodes. Both run in a
+//! detached tokio task so they never delay the HTTP response.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{
@@ -22,7 +23,8 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
-use semanticweft::{validate_unit, Graph, SemanticUnit, Visibility};
+use semanticweft::{validate_unit, Graph, Reference, RelType, SemanticUnit, UnitType, Visibility};
+use semanticweft_agent_core::AgentAddress;
 use semanticweft_node_api::{ListResponse, SubgraphResponse};
 
 use crate::{
@@ -74,6 +76,8 @@ pub struct SubgraphQueryParams {
 /// Validates the unit against the spec, rejects duplicates, stores the unit,
 /// and returns it with HTTP 201. For `network` and `limited` units, fan-out
 /// to registered local recipients runs in a detached background task.
+/// For `limited` units, remote push delivery to audience members on other
+/// nodes also runs in the same detached task.
 pub async fn submit(
     State(state): State<AppState>,
     Json(unit): Json<SemanticUnit>,
@@ -81,14 +85,17 @@ pub async fn submit(
     validate_unit(&unit).map_err(|e| AppError::UnprocessableEntity(e.to_string()))?;
     state.storage.put_unit(&unit).await?;
 
-    // Local fan-out: deliver non-public units to agents registered on this node.
-    // Runs detached so the HTTP response is never blocked by delivery.
+    // Local and remote fan-out run together in a detached task so the HTTP
+    // response is never blocked by delivery.
     let storage = Arc::clone(&state.storage);
+    let client = state.http_client.clone();
+    let node_did = state.config.node_id.clone();
     let unit_fanout = unit.clone();
     tokio::spawn(async move {
-        if let Err(e) = local_fanout(storage, unit_fanout).await {
-            tracing::warn!("fan-out error: {e}");
+        if let Err(e) = local_fanout(Arc::clone(&storage), unit_fanout.clone()).await {
+            tracing::warn!("local fan-out error: {e}");
         }
+        remote_fanout(client, unit_fanout, storage, node_did).await;
     });
 
     Ok((StatusCode::CREATED, Json(unit)))
@@ -128,6 +135,10 @@ async fn local_fanout(
             // Deliver to each audience member who is registered here.
             let audience: Vec<String> = unit.audience.clone().unwrap_or_default();
             for did in audience {
+                // Local entries have no '@'; skip remote ones here.
+                if did.contains('@') {
+                    continue;
+                }
                 if storage.get_agent(&did).await?.is_some() {
                     if let Err(e) = storage.deliver_to_inbox(&did, &unit).await {
                         tracing::warn!("inbox delivery to {did} failed: {e}");
@@ -138,6 +149,238 @@ async fn local_fanout(
     }
 
     Ok(())
+}
+
+/// Push a `limited` unit to audience members whose home node is elsewhere.
+///
+/// Remote entries are identified by the presence of `@` in the audience DID
+/// string (format: `did:key:z6Mk…@hostname`). Local entries (no `@`) are
+/// handled by [`local_fanout`] and are ignored here.
+///
+/// For each unique remote hostname the node's `/.well-known/semanticweft`
+/// document is fetched once to discover `api_base`. Results are cached in a
+/// per-call `HashMap` so multiple recipients on the same node only trigger
+/// one discovery request. The unit is then `POST`-ed to each recipient's
+/// inbox URL.
+///
+/// **Delivery failure notifications**: when a push attempt fails (network
+/// error, 4xx, 5xx), this node generates a `constraint` unit and delivers it
+/// to the original author's local inbox — if the author is registered here.
+/// The notification carries `references: [{ id: <original-unit-id>, rel:
+/// "notifies" }]` as the association fingerprint so the author can correlate
+/// it to the unit that triggered it.
+///
+/// All failures are handled per-recipient; a failure for one recipient never
+/// aborts delivery to others.
+async fn remote_fanout(
+    client: reqwest::Client,
+    unit: SemanticUnit,
+    storage: Arc<dyn Storage>,
+    node_did: String,
+) {
+    // Only `limited` units use push delivery (ADR-0009).
+    let vis = unit.visibility.clone().unwrap_or(Visibility::Public);
+    if vis != Visibility::Limited {
+        return;
+    }
+
+    let audience: Vec<String> = unit.audience.clone().unwrap_or_default();
+
+    // Collect remote audience entries (those containing '@'), grouped by hostname.
+    let mut by_hostname: HashMap<String, Vec<AgentAddress>> = HashMap::new();
+    for entry in &audience {
+        if !entry.contains('@') {
+            continue; // local entry — handled by local_fanout
+        }
+        match AgentAddress::parse(entry) {
+            Ok(addr) => {
+                by_hostname
+                    .entry(addr.hostname.clone())
+                    .or_default()
+                    .push(addr);
+            }
+            Err(e) => {
+                tracing::warn!("remote_fanout: invalid audience entry {entry:?}: {e}");
+            }
+        }
+    }
+
+    if by_hostname.is_empty() {
+        return;
+    }
+
+    // Discover api_base for each hostname (one request per hostname).
+    let mut api_base_cache: HashMap<String, String> = HashMap::new();
+    for (hostname, addrs) in &by_hostname {
+        // Use well_known_url() from AgentAddress — one URL per hostname.
+        let well_known = addrs[0].well_known_url();
+        let api_base = match client.get(&well_known).send().await {
+            Ok(resp) if resp.status().is_success() => match resp.text().await {
+                Ok(body) => {
+                    match serde_json::from_str::<serde_json::Value>(&body)
+                        .ok()
+                        .and_then(|v| v.get("api_base")?.as_str().map(str::to_string))
+                    {
+                        Some(base) => base,
+                        None => {
+                            tracing::warn!(
+                                "remote_fanout: no api_base in discovery document from {hostname}"
+                            );
+                            notify_author_of_failure(
+                                &storage,
+                                &node_did,
+                                &unit,
+                                &format!("@{hostname}"),
+                                &format!("discovery document from {hostname} missing api_base"),
+                            )
+                            .await;
+                            continue;
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "remote_fanout: failed to read discovery response from {hostname}: {e}"
+                    );
+                    notify_author_of_failure(
+                        &storage,
+                        &node_did,
+                        &unit,
+                        &format!("@{hostname}"),
+                        &format!("could not read discovery response from {hostname}: {e}"),
+                    )
+                    .await;
+                    continue;
+                }
+            },
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                tracing::warn!(
+                    "remote_fanout: discovery for {hostname} returned status {status}"
+                );
+                notify_author_of_failure(
+                    &storage,
+                    &node_did,
+                    &unit,
+                    &format!("@{hostname}"),
+                    &format!("discovery request to {hostname} returned HTTP {status}"),
+                )
+                .await;
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!("remote_fanout: discovery request to {hostname} failed: {e}");
+                notify_author_of_failure(
+                    &storage,
+                    &node_did,
+                    &unit,
+                    &format!("@{hostname}"),
+                    &format!("could not reach {hostname} for discovery: {e}"),
+                )
+                .await;
+                continue;
+            }
+        };
+        api_base_cache.insert(hostname.clone(), api_base);
+    }
+
+    // Deliver to each remote audience member.
+    for (hostname, addrs) in &by_hostname {
+        let Some(api_base) = api_base_cache.get(hostname) else {
+            continue; // discovery failed; already notified above
+        };
+        for addr in addrs {
+            let inbox = addr.inbox_url(api_base);
+            match client.post(&inbox).json(&unit).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    tracing::debug!(
+                        "remote_fanout: delivered unit {} to {addr}",
+                        unit.id
+                    );
+                }
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    tracing::warn!(
+                        "remote_fanout: delivery to {addr} returned status {status}"
+                    );
+                    notify_author_of_failure(
+                        &storage,
+                        &node_did,
+                        &unit,
+                        &addr.to_string(),
+                        &format!("remote inbox at {addr} returned HTTP {status}"),
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    tracing::warn!("remote_fanout: delivery to {addr} failed: {e}");
+                    notify_author_of_failure(
+                        &storage,
+                        &node_did,
+                        &unit,
+                        &addr.to_string(),
+                        &format!("delivery to {addr} failed: {e}"),
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+}
+
+/// Deliver a delivery-failure notification to the original author's local inbox.
+///
+/// The notification is a `constraint` unit authored by the node itself, with
+/// `visibility: limited` and `audience: [author]`. The `references` field
+/// carries `{ id: <original-unit-id>, rel: "notifies" }` as the association
+/// fingerprint so the author can correlate it to the unit that triggered it.
+///
+/// If the author is not registered on this node the notification is silently
+/// dropped — there is nowhere local to deliver it. All storage errors are
+/// logged and swallowed so a notification failure never disrupts the caller.
+async fn notify_author_of_failure(
+    storage: &Arc<dyn Storage>,
+    node_did: &str,
+    original_unit: &SemanticUnit,
+    recipient: &str,
+    reason: &str,
+) {
+    // Only notify if the author is registered locally.
+    match storage.get_agent(&original_unit.author).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return, // author not local; nowhere to deliver
+        Err(e) => {
+            tracing::warn!(
+                "remote_fanout: could not check author registration for notification: {e}"
+            );
+            return;
+        }
+    }
+
+    let mut notification = SemanticUnit::new(
+        UnitType::Constraint,
+        format!(
+            "Delivery of unit {} to recipient {recipient} failed: {reason}",
+            original_unit.id
+        ),
+        node_did,
+    );
+    notification.references = Some(vec![Reference {
+        id: original_unit.id.clone(),
+        rel: RelType::Notifies,
+    }]);
+    notification.visibility = Some(Visibility::Limited);
+    notification.audience = Some(vec![original_unit.author.clone()]);
+
+    if let Err(e) = storage
+        .deliver_to_inbox(&original_unit.author, &notification)
+        .await
+    {
+        tracing::warn!(
+            "remote_fanout: failed to deliver failure notification to {}: {e}",
+            original_unit.author
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 //! Assembles the Axum [`Router`] from all handler modules.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     routing::{delete, get, post},
@@ -15,7 +16,16 @@ use crate::{
 
 /// Build the complete application router with shared state.
 pub fn build_router(storage: Arc<dyn Storage>, config: NodeConfig) -> Router {
-    let state = AppState { storage, config };
+    let http_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("failed to build HTTP client for handler state");
+
+    let state = AppState {
+        storage,
+        config,
+        http_client,
+    };
 
     Router::new()
         // Node discovery
