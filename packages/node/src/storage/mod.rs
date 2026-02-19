@@ -176,4 +176,28 @@ pub trait Storage: Send + Sync + 'static {
 
     /// Persist the sync cursor for a peer (upsert by `peer_url`).
     async fn set_cursor(&self, peer_url: &str, cursor: &str) -> Result<(), StorageError>;
+
+    // --- Inbox ---------------------------------------------------------------
+
+    /// Deliver a unit to an agent's inbox.
+    ///
+    /// Called during fan-out after a non-public unit is submitted. Idempotent:
+    /// delivering the same unit to the same agent twice is not an error (the
+    /// second delivery is silently ignored).
+    async fn deliver_to_inbox(
+        &self,
+        agent_did: &str,
+        unit: &SemanticUnit,
+    ) -> Result<(), StorageError>;
+
+    /// Return a page of units in an agent's inbox, ordered by unit `id` ascending.
+    ///
+    /// Returns `(items, has_more)`. Pass the last item's `id` as `after` to
+    /// fetch the next page.
+    async fn get_inbox(
+        &self,
+        agent_did: &str,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<(Vec<SemanticUnit>, bool), StorageError>;
 }

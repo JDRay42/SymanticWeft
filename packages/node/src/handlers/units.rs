@@ -8,9 +8,12 @@
 //!
 //! # Fan-out
 //!
-//! When a `network` or `limited` unit is submitted, the node is responsible for
-//! delivering it to the relevant agents' inboxes. Fan-out is marked TODO here
-//! and will be added in the federation implementation phase.
+//! After a non-public unit is stored, [`local_fanout`] delivers it to the
+//! inboxes of eligible agents registered on this node. It runs in a detached
+//! tokio task so it never delays the HTTP response. Cross-node fan-out (for
+//! agents whose home node is elsewhere) is part of the federation phase.
+
+use std::sync::Arc;
 
 use axum::{
     extract::{Path, Query, State},
@@ -22,7 +25,10 @@ use serde::Deserialize;
 use semanticweft::{validate_unit, Graph, SemanticUnit, Visibility};
 use semanticweft_node_api::{ListResponse, SubgraphResponse};
 
-use crate::{error::AppError, storage::UnitFilter};
+use crate::{
+    error::AppError,
+    storage::{Storage, StorageError, UnitFilter},
+};
 
 use super::AppState;
 
@@ -66,7 +72,8 @@ pub struct SubgraphQueryParams {
 /// `POST /v1/units` — submit a new unit.
 ///
 /// Validates the unit against the spec, rejects duplicates, stores the unit,
-/// and returns it with HTTP 201. Fan-out to followers is TODO.
+/// and returns it with HTTP 201. For `network` and `limited` units, fan-out
+/// to registered local recipients runs in a detached background task.
 pub async fn submit(
     State(state): State<AppState>,
     Json(unit): Json<SemanticUnit>,
@@ -74,9 +81,63 @@ pub async fn submit(
     validate_unit(&unit).map_err(|e| AppError::UnprocessableEntity(e.to_string()))?;
     state.storage.put_unit(&unit).await?;
 
-    // TODO: fan-out to followers when visibility is Network or Limited.
+    // Local fan-out: deliver non-public units to agents registered on this node.
+    // Runs detached so the HTTP response is never blocked by delivery.
+    let storage = Arc::clone(&state.storage);
+    let unit_fanout = unit.clone();
+    tokio::spawn(async move {
+        if let Err(e) = local_fanout(storage, unit_fanout).await {
+            tracing::warn!("fan-out error: {e}");
+        }
+    });
 
     Ok((StatusCode::CREATED, Json(unit)))
+}
+
+/// Deliver a submitted unit to the inboxes of eligible agents on this node.
+///
+/// - `network` units go to all local followers of the author.
+/// - `limited` units go to local agents listed in the unit's `audience`.
+/// - `public` units are skipped (they enter the sync stream instead).
+///
+/// Failures per-recipient are logged but do not abort delivery to other
+/// recipients.
+async fn local_fanout(
+    storage: Arc<dyn Storage>,
+    unit: SemanticUnit,
+) -> Result<(), StorageError> {
+    let vis = unit.visibility.clone().unwrap_or(Visibility::Public);
+
+    match vis {
+        Visibility::Public => {
+            // Public units are discoverable via GET /v1/units and /v1/sync.
+            // No inbox delivery needed.
+        }
+        Visibility::Network => {
+            // Deliver to all followers of the author who are registered here.
+            let followers = storage.list_followers(&unit.author).await?;
+            for did in followers {
+                if storage.get_agent(&did).await?.is_some() {
+                    if let Err(e) = storage.deliver_to_inbox(&did, &unit).await {
+                        tracing::warn!("inbox delivery to {did} failed: {e}");
+                    }
+                }
+            }
+        }
+        Visibility::Limited => {
+            // Deliver to each audience member who is registered here.
+            let audience: Vec<String> = unit.audience.clone().unwrap_or_default();
+            for did in audience {
+                if storage.get_agent(&did).await?.is_some() {
+                    if let Err(e) = storage.deliver_to_inbox(&did, &unit).await {
+                        tracing::warn!("inbox delivery to {did} failed: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

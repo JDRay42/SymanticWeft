@@ -11,16 +11,26 @@
 //! them) is deferred to the federation implementation phase.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
+use serde::Deserialize;
 use semanticweft_node_api::{AgentProfile, InboxResponse, RegisterRequest};
 
 use crate::error::AppError;
 
 use super::AppState;
+
+/// Query parameters for `GET /v1/agents/{did}/inbox`.
+#[derive(Debug, Deserialize, Default)]
+pub struct InboxQueryParams {
+    /// Keyset pagination cursor (unit `id` of the last seen item).
+    pub after: Option<String>,
+    /// Page size (1–100, default 20).
+    pub limit: Option<u32>,
+}
 
 /// `POST /v1/agents/{did}` — register or update an agent.
 ///
@@ -67,10 +77,12 @@ pub async fn get_agent(
 /// `GET /v1/agents/{did}/inbox` — list units delivered to the agent's inbox.
 ///
 /// Returns 404 if the agent is not registered on this node.
-/// Currently returns an empty inbox; fan-out delivery is not yet implemented.
+/// Units are ordered oldest-first (UUIDv7 ascending). Use `?after=<id>` for
+/// keyset pagination.
 pub async fn inbox(
     State(state): State<AppState>,
     Path(did): Path<String>,
+    Query(params): Query<InboxQueryParams>,
 ) -> Result<Json<InboxResponse>, AppError> {
     state
         .storage
@@ -78,6 +90,17 @@ pub async fn inbox(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("agent {did} not found")))?;
 
-    // TODO: implement per-agent inbox table and fan-out delivery.
-    Ok(Json(InboxResponse::empty()))
+    let limit = params.limit.map(|l| l.clamp(1, 100)).unwrap_or(20);
+    let (items, has_more) = state
+        .storage
+        .get_inbox(&did, params.after.as_deref(), limit)
+        .await?;
+
+    let next_cursor = if has_more {
+        items.last().map(|u| u.id.clone())
+    } else {
+        None
+    };
+
+    Ok(Json(InboxResponse { items, next_cursor }))
 }

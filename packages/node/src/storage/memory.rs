@@ -27,6 +27,9 @@ struct Inner {
     peers: HashMap<String, PeerInfo>,
     cursors: HashMap<String, String>,
     node_config: HashMap<String, String>,
+    /// Per-agent inbox: agent DID → BTreeMap<unit_id, SemanticUnit>.
+    /// BTreeMap gives lexicographic order on UUIDv7 IDs for free keyset pagination.
+    inbox: HashMap<String, BTreeMap<String, SemanticUnit>>,
 }
 
 impl Inner {
@@ -38,6 +41,7 @@ impl Inner {
             peers: HashMap::new(),
             cursors: HashMap::new(),
             node_config: HashMap::new(),
+            inbox: HashMap::new(),
         }
     }
 }
@@ -288,6 +292,56 @@ impl Storage for MemoryStorage {
             .insert(peer_url.to_string(), cursor.to_string());
         Ok(())
     }
+
+    // --- Inbox ---------------------------------------------------------------
+
+    async fn deliver_to_inbox(
+        &self,
+        agent_did: &str,
+        unit: &SemanticUnit,
+    ) -> Result<(), StorageError> {
+        let mut inner = self.inner.write().unwrap();
+        inner
+            .inbox
+            .entry(agent_did.to_string())
+            .or_default()
+            .entry(unit.id.clone())
+            .or_insert_with(|| unit.clone());
+        Ok(())
+    }
+
+    async fn get_inbox(
+        &self,
+        agent_did: &str,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<(Vec<SemanticUnit>, bool), StorageError> {
+        let inner = self.inner.read().unwrap();
+        let limit = limit as usize;
+
+        let agent_inbox = match inner.inbox.get(agent_did) {
+            Some(m) => m,
+            None => return Ok((vec![], false)),
+        };
+
+        let iter: Box<dyn Iterator<Item = &SemanticUnit>> = if let Some(after) = after {
+            use std::ops::Bound;
+            Box::new(
+                agent_inbox
+                    .range((Bound::Excluded(after.to_string()), Bound::Unbounded))
+                    .map(|(_, v)| v),
+            )
+        } else {
+            Box::new(agent_inbox.values())
+        };
+
+        let mut items: Vec<SemanticUnit> = iter.take(limit + 1).cloned().collect();
+        let has_more = items.len() > limit;
+        if has_more {
+            items.truncate(limit);
+        }
+        Ok((items, has_more))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -448,5 +502,58 @@ mod tests {
             c.as_deref(),
             Some("019526b2-f68a-7c3e-a0b4-000000000001")
         );
+    }
+
+    #[tokio::test]
+    async fn inbox_deliver_and_read() {
+        let s = MemoryStorage::new();
+        let u = unit("019526b2-f68a-7c3e-a0b4-000000000001");
+        s.deliver_to_inbox("did:key:alice", &u).await.unwrap();
+
+        let (items, has_more) = s.get_inbox("did:key:alice", None, 10).await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, u.id);
+        assert!(!has_more);
+    }
+
+    #[tokio::test]
+    async fn inbox_idempotent() {
+        let s = MemoryStorage::new();
+        let u = unit("019526b2-f68a-7c3e-a0b4-000000000001");
+        s.deliver_to_inbox("did:key:alice", &u).await.unwrap();
+        s.deliver_to_inbox("did:key:alice", &u).await.unwrap();
+
+        let (items, _) = s.get_inbox("did:key:alice", None, 10).await.unwrap();
+        assert_eq!(items.len(), 1, "duplicate delivery must be deduplicated");
+    }
+
+    #[tokio::test]
+    async fn inbox_pagination() {
+        let s = MemoryStorage::new();
+        for i in 1u8..=5 {
+            let mut u = unit("placeholder");
+            u.id = format!("019526b2-f68a-7c3e-a0b4-0000000000{i:02x}");
+            s.deliver_to_inbox("did:key:alice", &u).await.unwrap();
+        }
+
+        let (page1, has_more) = s.get_inbox("did:key:alice", None, 2).await.unwrap();
+        assert_eq!(page1.len(), 2);
+        assert!(has_more);
+
+        let cursor = page1.last().map(|u| u.id.clone());
+        let (page2, _) = s
+            .get_inbox("did:key:alice", cursor.as_deref(), 2)
+            .await
+            .unwrap();
+        assert_eq!(page2.len(), 2);
+        assert_ne!(page1[0].id, page2[0].id, "pages must not overlap");
+    }
+
+    #[tokio::test]
+    async fn inbox_empty_for_unknown_agent() {
+        let s = MemoryStorage::new();
+        let (items, has_more) = s.get_inbox("did:key:nobody", None, 10).await.unwrap();
+        assert!(items.is_empty());
+        assert!(!has_more);
     }
 }
