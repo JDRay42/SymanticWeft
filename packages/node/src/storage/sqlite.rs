@@ -81,6 +81,17 @@ CREATE TABLE IF NOT EXISTS node_config (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- Per-agent inbox: units delivered by fan-out that the agent has not yet read.
+-- The (agent_did, unit_id) primary key deduplicates repeated deliveries.
+-- unit_id is UUIDv7, so keyset pagination on (agent_did, unit_id ASC) is free.
+CREATE TABLE IF NOT EXISTS inbox (
+    agent_did TEXT NOT NULL,
+    unit_id   TEXT NOT NULL,
+    data      TEXT NOT NULL,
+    PRIMARY KEY (agent_did, unit_id)
+);
+CREATE INDEX IF NOT EXISTS idx_inbox_agent_unit ON inbox(agent_did, unit_id ASC);
 ";
 
 // ---------------------------------------------------------------------------
@@ -683,6 +694,85 @@ impl Storage for SqliteStorage {
         .await
         .map_err(|e| StorageError::Internal(format!("task join error: {e}")))?
     }
+
+    // --- Inbox ---------------------------------------------------------------
+
+    async fn deliver_to_inbox(
+        &self,
+        agent_did: &str,
+        unit: &SemanticUnit,
+    ) -> Result<(), StorageError> {
+        let conn = Arc::clone(&self.conn);
+        let agent_did = agent_did.to_string();
+        let unit = unit.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let data = serde_json::to_string(&unit).map_err(map_json_err)?;
+            conn.execute(
+                "INSERT OR IGNORE INTO inbox (agent_did, unit_id, data) VALUES (?1, ?2, ?3)",
+                params![agent_did, unit.id, data],
+            )
+            .map_err(map_err)?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("task join error: {e}")))?
+    }
+
+    async fn get_inbox(
+        &self,
+        agent_did: &str,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<(Vec<SemanticUnit>, bool), StorageError> {
+        let conn = Arc::clone(&self.conn);
+        let agent_did = agent_did.to_string();
+        let after = after.map(|s| s.to_string());
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+
+            let mut sql =
+                String::from("SELECT data FROM inbox WHERE agent_did = ?");
+            let mut params_vec: Vec<SqlParam> = vec![SqlParam::Text(agent_did)];
+
+            if let Some(after) = &after {
+                sql.push_str(" AND unit_id > ?");
+                params_vec.push(SqlParam::Text(after.clone()));
+            }
+
+            sql.push_str(" ORDER BY unit_id ASC LIMIT ?");
+            params_vec.push(SqlParam::Integer(limit as i64 + 1));
+
+            let params_refs: Vec<&dyn rusqlite::ToSql> =
+                params_vec.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+
+            let mut stmt = conn.prepare(&sql).map_err(map_err)?;
+            let data_rows: Vec<String> = stmt
+                .query_map(params_refs.as_slice(), |row| row.get::<_, String>(0))
+                .map_err(map_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(map_err)?;
+
+            let limit = limit as usize;
+            let has_more = data_rows.len() > limit;
+            let data_rows = if has_more {
+                &data_rows[..limit]
+            } else {
+                &data_rows[..]
+            };
+
+            let items: Vec<SemanticUnit> = data_rows
+                .iter()
+                .map(|data| serde_json::from_str(data).map_err(map_json_err))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok((items, has_more))
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("task join error: {e}")))?
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -823,5 +913,50 @@ mod tests {
             .unwrap();
         let c = s.get_cursor("https://peer.example.com").await.unwrap();
         assert_eq!(c.as_deref(), Some("some-cursor"));
+    }
+
+    #[tokio::test]
+    async fn inbox_deliver_and_read() {
+        let s = SqliteStorage::open_in_memory().unwrap();
+        let u = unit("019526b2-f68a-7c3e-a0b4-000000000001");
+        s.deliver_to_inbox("did:key:alice", &u).await.unwrap();
+
+        let (items, has_more) = s.get_inbox("did:key:alice", None, 10).await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, u.id);
+        assert!(!has_more);
+    }
+
+    #[tokio::test]
+    async fn inbox_idempotent() {
+        let s = SqliteStorage::open_in_memory().unwrap();
+        let u = unit("019526b2-f68a-7c3e-a0b4-000000000001");
+        s.deliver_to_inbox("did:key:alice", &u).await.unwrap();
+        s.deliver_to_inbox("did:key:alice", &u).await.unwrap();
+
+        let (items, _) = s.get_inbox("did:key:alice", None, 10).await.unwrap();
+        assert_eq!(items.len(), 1, "duplicate delivery must be deduplicated");
+    }
+
+    #[tokio::test]
+    async fn inbox_pagination() {
+        let s = SqliteStorage::open_in_memory().unwrap();
+        for i in 1u8..=5 {
+            let mut u = unit("placeholder");
+            u.id = format!("019526b2-f68a-7c3e-a0b4-0000000000{i:02x}");
+            s.deliver_to_inbox("did:key:alice", &u).await.unwrap();
+        }
+
+        let (page1, has_more) = s.get_inbox("did:key:alice", None, 2).await.unwrap();
+        assert_eq!(page1.len(), 2);
+        assert!(has_more);
+
+        let cursor = page1.last().map(|u| u.id.clone());
+        let (page2, _) = s
+            .get_inbox("did:key:alice", cursor.as_deref(), 2)
+            .await
+            .unwrap();
+        assert_eq!(page2.len(), 2);
+        assert_ne!(page1[0].id, page2[0].id, "pages must not overlap");
     }
 }
