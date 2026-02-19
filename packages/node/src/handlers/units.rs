@@ -4,7 +4,8 @@
 //!
 //! Business logic, not storage, decides what a caller may see:
 //! - Unauthenticated callers receive `public` units only.
-//! - TODO: Extend once auth middleware is in place (network + limited units).
+//! - Authenticated callers may also receive `network` units if they follow the author.
+//! - `limited` units are visible only if the caller DID is in the unit's audience.
 //!
 //! # Fan-out
 //!
@@ -29,6 +30,7 @@ use semanticweft_node_api::{ListResponse, SubgraphResponse};
 
 use crate::{
     error::AppError,
+    middleware::auth::OptionalAuth,
     storage::{Storage, StorageError, UnitFilter},
 };
 
@@ -80,12 +82,27 @@ pub struct SubgraphQueryParams {
 /// nodes also runs in the same detached task.
 pub async fn submit(
     State(state): State<AppState>,
+    auth: OptionalAuth,
     Json(unit): Json<SemanticUnit>,
 ) -> Result<impl IntoResponse, AppError> {
     validate_unit(&unit).map_err(|e| AppError::UnprocessableEntity(e.to_string()))?;
     if unit.proof.is_some() {
         semanticweft::verify_proof(&unit).map_err(|e| AppError::BadRequest(e.to_string()))?;
     }
+
+    // Non-public units require authentication as the unit's author.
+    let vis = unit.visibility.as_ref().unwrap_or(&Visibility::Public);
+    if *vis != Visibility::Public {
+        let caller_did = auth.0.as_deref().ok_or_else(|| {
+            AppError::Unauthorized("authentication required for non-public units".into())
+        })?;
+        if caller_did != unit.author {
+            return Err(AppError::Forbidden(
+                "you may only submit units authored by your own DID".into(),
+            ));
+        }
+    }
+
     state.storage.put_unit(&unit).await?;
 
     // Local and remote fan-out run together in a detached task so the HTTP
@@ -392,10 +409,11 @@ async fn notify_author_of_failure(
 
 /// `GET /v1/units/{id}` — retrieve a unit by its UUIDv7 ID.
 ///
-/// Returns 404 for non-public units (visibility enforcement; see module docs).
+/// Visibility is enforced per auth state (see module docs).
 pub async fn get_by_id(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    auth: OptionalAuth,
 ) -> Result<Json<SemanticUnit>, AppError> {
     let unit = state
         .storage
@@ -403,11 +421,33 @@ pub async fn get_by_id(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("unit {id} not found")))?;
 
-    // Unauthenticated: only serve public units.
-    // TODO: expand when auth middleware is added.
     let vis = unit.visibility.as_ref().unwrap_or(&Visibility::Public);
-    if *vis != Visibility::Public {
-        return Err(AppError::NotFound(format!("unit {id} not found")));
+    match vis {
+        Visibility::Public => {} // always visible
+        Visibility::Network => {
+            // Visible to authenticated followers of the author.
+            let caller_did = auth.0.as_deref().ok_or_else(|| {
+                AppError::NotFound(format!("unit {id} not found"))
+            })?;
+            let is_follower = state
+                .storage
+                .is_following(caller_did, &unit.author)
+                .await
+                .unwrap_or(false);
+            if !is_follower {
+                return Err(AppError::NotFound(format!("unit {id} not found")));
+            }
+        }
+        Visibility::Limited => {
+            // Visible only if caller DID is in unit.audience.
+            let caller_did = auth.0.as_deref().ok_or_else(|| {
+                AppError::NotFound(format!("unit {id} not found"))
+            })?;
+            let audience = unit.audience.as_deref().unwrap_or(&[]);
+            if !audience.iter().any(|a| a == caller_did) {
+                return Err(AppError::NotFound(format!("unit {id} not found")));
+            }
+        }
     }
 
     Ok(Json(unit))
@@ -421,8 +461,14 @@ pub async fn get_by_id(
 pub async fn list(
     State(state): State<AppState>,
     Query(params): Query<UnitQueryParams>,
+    auth: OptionalAuth,
 ) -> Result<Json<ListResponse>, AppError> {
-    let filter = build_filter(params, vec![Visibility::Public]);
+    let visibilities = if auth.0.is_some() {
+        vec![Visibility::Public, Visibility::Network]
+    } else {
+        vec![Visibility::Public]
+    };
+    let filter = build_filter(params, visibilities);
     let (units, has_more) = state.storage.list_units(&filter).await?;
     Ok(Json(ListResponse::from_page(units, has_more)))
 }

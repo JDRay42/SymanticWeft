@@ -20,6 +20,8 @@ pub enum AppError {
     Conflict(String),
     UnprocessableEntity(String),
     Internal(String),
+    Forbidden(String),
+    Unauthorized(String),
 }
 
 impl IntoResponse for AppError {
@@ -34,6 +36,8 @@ impl IntoResponse for AppError {
             AppError::Internal(msg) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal_error", msg)
             }
+            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, "forbidden", msg),
+            AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "unauthorized", msg),
         };
         let body = ErrorResponse::new(code, message);
         (status, Json(body)).into_response()

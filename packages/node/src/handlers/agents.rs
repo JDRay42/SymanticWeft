@@ -20,6 +20,7 @@ use serde::Deserialize;
 use semanticweft_node_api::{AgentProfile, InboxResponse, RegisterRequest};
 
 use crate::error::AppError;
+use crate::middleware::auth::RequireAuth;
 
 use super::AppState;
 
@@ -39,11 +40,18 @@ pub struct InboxQueryParams {
 pub async fn register(
     State(state): State<AppState>,
     Path(did): Path<String>,
+    auth: RequireAuth,
     Json(req): Json<RegisterRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if req.did != did {
         return Err(AppError::BadRequest(
             "did in request body must match the {did} path parameter".into(),
+        ));
+    }
+
+    if auth.did != did {
+        return Err(AppError::Forbidden(
+            "cannot register as a different DID".into(),
         ));
     }
 
@@ -82,6 +90,7 @@ pub async fn get_agent(
 pub async fn inbox(
     State(state): State<AppState>,
     Path(did): Path<String>,
+    auth: RequireAuth,
     Query(params): Query<InboxQueryParams>,
 ) -> Result<Json<InboxResponse>, AppError> {
     state
@@ -89,6 +98,10 @@ pub async fn inbox(
         .get_agent(&did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("agent {did} not found")))?;
+
+    if auth.did != did {
+        return Err(AppError::NotFound(format!("agent {did} not found")));
+    }
 
     let limit = params.limit.map(|l| l.clamp(1, 100)).unwrap_or(20);
     let (items, has_more) = state
