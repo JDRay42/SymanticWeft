@@ -59,6 +59,8 @@ pub enum RelType {
     Questions,
     /// This unit narrows, specialises, or adds precision to the referenced unit.
     Refines,
+    /// This unit is a system notification about the referenced unit (e.g. delivery failure).
+    Notifies,
 }
 
 /// Formats the relationship as its kebab-case wire-format string (e.g. `"derives-from"`).
@@ -70,6 +72,7 @@ impl std::fmt::Display for RelType {
             RelType::DerivesFrom => write!(f, "derives-from"),
             RelType::Questions => write!(f, "questions"),
             RelType::Refines => write!(f, "refines"),
+            RelType::Notifies => write!(f, "notifies"),
         }
     }
 }
@@ -107,9 +110,10 @@ impl std::str::FromStr for RelType {
             "derives-from" => Ok(RelType::DerivesFrom),
             "questions" => Ok(RelType::Questions),
             "refines" => Ok(RelType::Refines),
+            "notifies" => Ok(RelType::Notifies),
             _ => Err(format!(
                 "unknown rel type {:?}; expected one of: \
-                 supports, rebuts, derives-from, questions, refines",
+                 supports, rebuts, derives-from, questions, refines, notifies",
                 s
             )),
         }
