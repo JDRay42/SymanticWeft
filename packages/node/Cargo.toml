@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 semanticweft = { path = "../core" }
 semanticweft-node-api = { path = "../node-api" }
+semanticweft-agent-core = { path = "../agent-core" }
 
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }

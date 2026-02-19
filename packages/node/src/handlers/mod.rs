@@ -21,4 +21,7 @@ use crate::{config::NodeConfig, storage::Storage};
 pub struct AppState {
     pub storage: Arc<dyn Storage>,
     pub config: NodeConfig,
+    /// HTTP client for outbound requests (remote fan-out, etc.).
+    /// `reqwest::Client` is cheaply clonable — it wraps an `Arc` internally.
+    pub http_client: reqwest::Client,
 }
