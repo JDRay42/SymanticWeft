@@ -25,5 +25,10 @@ async-trait = "0.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 reqwest = { version = "0.12", features = ["json"] }
 
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+bs58 = "0.5"
+hex = "0.4"
+
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

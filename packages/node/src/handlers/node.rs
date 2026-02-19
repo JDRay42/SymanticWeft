@@ -14,6 +14,7 @@ pub async fn well_known(State(state): State<AppState>) -> Json<NodeInfo> {
     let mut info = NodeInfo::new(&cfg.node_id, &cfg.api_base);
     info.name = cfg.name.clone();
     info.contact = cfg.contact.clone();
+    info.public_key = cfg.public_key.clone();
     info.capabilities = vec![
         Capability::Sync,
         Capability::Subgraph,

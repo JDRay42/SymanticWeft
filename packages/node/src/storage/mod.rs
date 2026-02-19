@@ -146,10 +146,27 @@ pub trait Storage: Send + Sync + 'static {
     // --- Peers ---------------------------------------------------------------
 
     /// Add or update a peer entry (upsert by `node_id`).
+    ///
+    /// On conflict: updates `api_base` and `last_seen` but does **not**
+    /// overwrite the stored `reputation` — reputation is managed separately
+    /// by the reputation system (ADR-0008).
     async fn add_peer(&self, peer: &PeerInfo) -> Result<(), StorageError>;
 
-    /// Return all known peers.
+    /// Remove a peer by `node_id`. Used by the eviction policy when the peer
+    /// list reaches `SWEFT_MAX_PEERS`. No-op if the peer is not known.
+    async fn remove_peer(&self, node_id: &str) -> Result<(), StorageError>;
+
+    /// Return all known peers, ordered by reputation descending (best first).
     async fn list_peers(&self) -> Result<Vec<PeerInfo>, StorageError>;
+
+    // --- Node configuration -------------------------------------------------
+
+    /// Retrieve a node-level config value by key (e.g., `"node_identity_seed"`).
+    /// Returns `None` if the key has never been set.
+    async fn get_node_config(&self, key: &str) -> Result<Option<String>, StorageError>;
+
+    /// Persist a node-level config value (upsert by key).
+    async fn set_node_config(&self, key: &str, value: &str) -> Result<(), StorageError>;
 
     // --- Sync cursors --------------------------------------------------------
 

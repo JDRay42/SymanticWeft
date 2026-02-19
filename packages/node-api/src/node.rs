@@ -51,6 +51,15 @@ pub struct NodeInfo {
     /// Operator contact information (email or URL). OPTIONAL.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contact: Option<String>,
+
+    /// The node's Ed25519 public key, multibase-encoded (base58btc, `z` prefix).
+    ///
+    /// This is a convenience field — the same key is also embedded in `node_id`
+    /// when `node_id` is a `did:key` DID. Peers use this field to verify node
+    /// identity without implementing full DID resolution. Absent on nodes that
+    /// have not yet generated a keypair.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
 }
 
 impl NodeInfo {
@@ -68,6 +77,7 @@ impl NodeInfo {
             signing_required: false,
             pow_required: None,
             contact: None,
+            public_key: None,
         }
     }
 }

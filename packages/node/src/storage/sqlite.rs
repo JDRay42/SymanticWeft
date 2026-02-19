@@ -10,8 +10,9 @@
 //! - `unit_references` — denormalised edge index for inbound subgraph traversal.
 //! - `agents` — registered agent profiles.
 //! - `follows` — (follower, followee) edges.
-//! - `peers` — known peer nodes.
+//! - `peers` — known peer nodes with reputation and last_seen (ADR-0008).
 //! - `sync_cursors` — last-seen UUIDv7 per peer, for incremental federation.
+//! - `node_config` — key-value store for node-level settings (e.g. identity seed).
 
 use std::sync::{Arc, Mutex};
 
@@ -64,13 +65,21 @@ CREATE TABLE IF NOT EXISTS follows (
 CREATE INDEX IF NOT EXISTS idx_follows_followee ON follows(followee);
 
 CREATE TABLE IF NOT EXISTS peers (
-    node_id  TEXT PRIMARY KEY,
-    api_base TEXT NOT NULL
+    node_id    TEXT PRIMARY KEY,
+    api_base   TEXT NOT NULL,
+    reputation REAL NOT NULL DEFAULT 0.5,
+    last_seen  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sync_cursors (
     peer_url TEXT PRIMARY KEY,
     cursor   TEXT NOT NULL
+);
+
+-- Key-value store for durable node-level settings (e.g. identity seed).
+CREATE TABLE IF NOT EXISTS node_config (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 ";
 
@@ -91,6 +100,7 @@ impl SqliteStorage {
     pub fn open(path: &str) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        Self::migrate(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -100,9 +110,25 @@ impl SqliteStorage {
     pub fn open_in_memory() -> Result<Self, rusqlite::Error> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
+        // In-memory DBs are always fresh; no migration needed.
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    /// Apply additive migrations for existing databases that pre-date schema
+    /// additions. Each `ALTER TABLE` is attempted and the error for "duplicate
+    /// column name" is swallowed — this is intentional and safe.
+    fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
+        // peers: reputation and last_seen columns (added in this version)
+        let _ = conn.execute(
+            "ALTER TABLE peers ADD COLUMN reputation REAL NOT NULL DEFAULT 0.5",
+            [],
+        );
+        let _ = conn.execute("ALTER TABLE peers ADD COLUMN last_seen TEXT", []);
+
+        // node_config table is covered by CREATE TABLE IF NOT EXISTS in SCHEMA.
+        Ok(())
     }
 }
 
@@ -515,12 +541,30 @@ impl Storage for SqliteStorage {
 
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
+            // On conflict: update api_base and last_seen but NOT reputation.
             conn.execute(
-                "INSERT INTO peers (node_id, api_base) VALUES (?1, ?2)
-                 ON CONFLICT(node_id) DO UPDATE SET api_base = excluded.api_base",
-                params![peer.node_id, peer.api_base],
+                "INSERT INTO peers (node_id, api_base, reputation, last_seen)
+                 VALUES (?1, ?2, 0.5, ?3)
+                 ON CONFLICT(node_id) DO UPDATE SET
+                   api_base  = excluded.api_base,
+                   last_seen = excluded.last_seen",
+                params![peer.node_id, peer.api_base, peer.last_seen],
             )
             .map_err(map_err)?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("task join error: {e}")))?
+    }
+
+    async fn remove_peer(&self, node_id: &str) -> Result<(), StorageError> {
+        let conn = Arc::clone(&self.conn);
+        let node_id = node_id.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            conn.execute("DELETE FROM peers WHERE node_id = ?1", params![node_id])
+                .map_err(map_err)?;
             Ok(())
         })
         .await
@@ -533,19 +577,66 @@ impl Storage for SqliteStorage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let mut stmt = conn
-                .prepare("SELECT node_id, api_base FROM peers ORDER BY node_id ASC")
+                .prepare(
+                    "SELECT node_id, api_base, reputation, last_seen
+                     FROM peers ORDER BY reputation DESC, node_id ASC",
+                )
                 .map_err(map_err)?;
             let result = stmt
                 .query_map([], |row| {
                     Ok(PeerInfo {
-                        node_id: row.get(0)?,
-                        api_base: row.get(1)?,
+                        node_id:    row.get(0)?,
+                        api_base:   row.get(1)?,
+                        reputation: row.get::<_, f64>(2)? as f32,
+                        last_seen:  row.get(3)?,
                     })
                 })
                 .map_err(map_err)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(map_err)?;
             Ok(result)
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("task join error: {e}")))?
+    }
+
+    // --- Node configuration -------------------------------------------------
+
+    async fn get_node_config(&self, key: &str) -> Result<Option<String>, StorageError> {
+        let conn = Arc::clone(&self.conn);
+        let key = key.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let result = conn.query_row(
+                "SELECT value FROM node_config WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            );
+            match result {
+                Ok(v) => Ok(Some(v)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(map_err(e)),
+            }
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("task join error: {e}")))?
+    }
+
+    async fn set_node_config(&self, key: &str, value: &str) -> Result<(), StorageError> {
+        let conn = Arc::clone(&self.conn);
+        let key = key.to_string();
+        let value = value.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO node_config (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )
+            .map_err(map_err)?;
+            Ok(())
         })
         .await
         .map_err(|e| StorageError::Internal(format!("task join error: {e}")))?
@@ -671,23 +762,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn peer_and_cursor_roundtrip() {
+    async fn peer_roundtrip_with_reputation() {
         let s = SqliteStorage::open_in_memory().unwrap();
-        let p = PeerInfo {
-            node_id: "did:key:z6MkPeer".into(),
-            api_base: "https://peer.example.com/v1".into(),
-        };
+        let p = PeerInfo::new("did:key:z6MkPeer", "https://peer.example.com/v1");
         s.add_peer(&p).await.unwrap();
+
         let peers = s.list_peers().await.unwrap();
         assert_eq!(peers.len(), 1);
+        assert!((peers[0].reputation - 0.5).abs() < f32::EPSILON);
+        assert!(peers[0].last_seen.is_none());
+    }
+
+    #[tokio::test]
+    async fn add_peer_does_not_overwrite_reputation() {
+        let s = SqliteStorage::open_in_memory().unwrap();
+        s.add_peer(&PeerInfo::new("did:key:z6MkPeer", "https://peer.example.com/v1"))
+            .await
+            .unwrap();
+
+        // Simulate re-announcement from peer (api_base may have changed).
+        let mut updated = PeerInfo::new("did:key:z6MkPeer", "https://new-url.example.com/v1");
+        updated.last_seen = Some("2026-02-19T10:00:00Z".into());
+        s.add_peer(&updated).await.unwrap();
+
+        let peers = s.list_peers().await.unwrap();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].api_base, "https://new-url.example.com/v1");
+        // Reputation should still be the default 0.5, not reset.
+        assert!((peers[0].reputation - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn remove_peer() {
+        let s = SqliteStorage::open_in_memory().unwrap();
+        s.add_peer(&PeerInfo::new("did:key:z6MkPeer", "https://peer.example.com/v1"))
+            .await
+            .unwrap();
+        s.remove_peer("did:key:z6MkPeer").await.unwrap();
+        assert!(s.list_peers().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn node_config_roundtrip() {
+        let s = SqliteStorage::open_in_memory().unwrap();
+        assert!(s.get_node_config("foo").await.unwrap().is_none());
+        s.set_node_config("foo", "bar").await.unwrap();
+        assert_eq!(s.get_node_config("foo").await.unwrap().as_deref(), Some("bar"));
+        s.set_node_config("foo", "baz").await.unwrap();
+        assert_eq!(s.get_node_config("foo").await.unwrap().as_deref(), Some("baz"));
+    }
+
+    #[tokio::test]
+    async fn cursor_roundtrip() {
+        let s = SqliteStorage::open_in_memory().unwrap();
+        let p = PeerInfo::new("did:key:z6MkPeer", "https://peer.example.com/v1");
+        s.add_peer(&p).await.unwrap();
 
         s.set_cursor("https://peer.example.com", "some-cursor")
             .await
             .unwrap();
-        let c = s
-            .get_cursor("https://peer.example.com")
-            .await
-            .unwrap();
+        let c = s.get_cursor("https://peer.example.com").await.unwrap();
         assert_eq!(c.as_deref(), Some("some-cursor"));
     }
 }
