@@ -1,23 +1,37 @@
-//! WebAssembly bindings for the SemanticWeft core library.
+//! WebAssembly bindings for the SemanticWeft core and agent-core libraries.
 //!
-//! Exposes [`validate`], [`new_unit`], and [`render`] to JavaScript/TypeScript
-//! via `wasm-bindgen`. Compile with `wasm-pack build` to produce an npm-ready
-//! package that works in browsers, Node.js, and any other WASM host.
+//! Exposes two groups of APIs to JavaScript/TypeScript via `wasm-bindgen`.
+//! Compile with `wasm-pack build` to produce an npm-ready package that works
+//! in browsers, Node.js, and any other WASM host.
 //!
-//! # Usage (JavaScript)
+//! ## Unit API — [`validate`], [`new_unit`], [`render`]
 //!
 //! ```js
 //! import init, { validate, new_unit, render } from './semanticweft_wasm.js';
 //! await init();
 //!
-//! // Create a unit.
 //! const json = new_unit('assertion', 'CO₂ is rising.', 'did:key:z6Mk...');
-//!
-//! // Validate it (throws a string on error).
 //! validate(json);
-//!
-//! // Render it as human-readable text.
 //! console.log(render(json));
+//! ```
+//!
+//! ## Agent API — [`AgentIdentity`], [`parse_agent_address`], [`node_session_from_discovery`]
+//!
+//! ```js
+//! // Generate (or restore) an identity.
+//! const id = new AgentIdentity();           // fresh keypair
+//! const id = AgentIdentity.fromSeedHex(savedHex);  // restore
+//! const did = id.did;
+//! localStorage.setItem('seed', id.seedHex); // host persists the seed
+//!
+//! // Parse a recipient address.
+//! const addr = parse_agent_address('did:key:z6Mk…@sweft.example.com');
+//! // addr: { did, hostname, wellKnownUrl }
+//!
+//! // Resolve a session after fetching the discovery doc (I/O is yours).
+//! const discovery = await fetch(addr.wellKnownUrl).then(r => r.text());
+//! const session = node_session_from_discovery(discovery, id.did);
+//! // session: { apiBase, inboxUrl, registerUrl, unitsUrl, peersUrl }
 //! ```
 
 use wasm_bindgen::prelude::*;
@@ -145,4 +159,167 @@ pub fn render(json: &str) -> Result<String, JsValue> {
     let unit: semanticweft::SemanticUnit = serde_json::from_str(json)
         .map_err(|e| JsValue::from_str(&format!("parse error: {e}")))?;
     Ok(semanticweft::render::render_unit(&unit))
+}
+
+// ── Agent API ─────────────────────────────────────────────────────────────────
+
+/// An agent's Ed25519 identity.
+///
+/// Holds the private key in WASM memory.  The host is responsible for
+/// persisting [`seedHex`] and restoring it via [`fromSeedHex`] on the next
+/// run.  The seed is secret — never transmit it over the network.
+#[wasm_bindgen]
+pub struct AgentIdentity {
+    inner: semanticweft_agent_core::AgentIdentity,
+}
+
+#[wasm_bindgen]
+impl AgentIdentity {
+    /// Generate a fresh identity using the host's random number source.
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        setup();
+        Self {
+            inner: semanticweft_agent_core::AgentIdentity::generate(),
+        }
+    }
+
+    /// Restore an identity from a previously saved hex-encoded seed.
+    ///
+    /// Throws if `seed_hex` is not exactly 64 hex characters (32 bytes).
+    #[wasm_bindgen(js_name = fromSeedHex)]
+    pub fn from_seed_hex(seed_hex: &str) -> Result<AgentIdentity, JsValue> {
+        setup();
+        let bytes = hex_to_32_bytes(seed_hex)?;
+        Ok(Self {
+            inner: semanticweft_agent_core::AgentIdentity::from_seed(&bytes),
+        })
+    }
+
+    /// The agent's `did:key` DID, e.g. `did:key:z6Mk…`.
+    ///
+    /// This is the stable public identity.  Share it freely.
+    #[wasm_bindgen(getter)]
+    pub fn did(&self) -> String {
+        self.inner.did()
+    }
+
+    /// The seed as a lowercase hex string (64 characters = 32 bytes).
+    ///
+    /// **Keep this secret.**  Pass it to [`fromSeedHex`] on the next run.
+    #[wasm_bindgen(getter, js_name = seedHex)]
+    pub fn seed_hex(&self) -> String {
+        self.inner
+            .seed()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    /// The public key in multibase format (`z`-prefixed base58btc).
+    ///
+    /// Safe to share.  Matches the value stored in `AgentProfile.public_key`
+    /// on the node.
+    #[wasm_bindgen(getter, js_name = publicKeyMultibase)]
+    pub fn public_key_multibase(&self) -> String {
+        self.inner.public_key_multibase()
+    }
+
+    /// Sign `message` bytes with the agent's private key.
+    ///
+    /// Returns the raw 64-byte Ed25519 signature as a `Uint8Array`.
+    pub fn sign(&self, message: &[u8]) -> Vec<u8> {
+        self.inner.sign(message)
+    }
+}
+
+/// Parse an agent address string (`did:key:z6Mk…@hostname`) and return a
+/// plain JS object with the following fields:
+///
+/// ```json
+/// {
+///   "did":          "did:key:z6Mk…",
+///   "hostname":     "sweft.example.com",
+///   "nodeUrl":      "https://sweft.example.com",
+///   "wellKnownUrl": "https://sweft.example.com/.well-known/semanticweft"
+/// }
+/// ```
+///
+/// Throws a descriptive string on parse failure.
+#[wasm_bindgen(js_name = parseAgentAddress)]
+pub fn parse_agent_address(s: &str) -> Result<JsValue, JsValue> {
+    setup();
+    let addr = semanticweft_agent_core::AgentAddress::parse(s)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+    let obj = serde_json::json!({
+        "did":          addr.did,
+        "hostname":     addr.hostname,
+        "nodeUrl":      addr.node_url(),
+        "wellKnownUrl": addr.well_known_url(),
+    });
+    Ok(JsValue::from_str(&obj.to_string()))
+}
+
+/// Build a node session from a discovery document JSON string and the
+/// agent's own DID.  Returns a plain JS object with the following fields:
+///
+/// ```json
+/// {
+///   "apiBase":     "https://sweft.example.com/v1",
+///   "inboxUrl":    "https://sweft.example.com/v1/agents/did%3A…/inbox",
+///   "registerUrl": "https://sweft.example.com/v1/agents/did%3A…",
+///   "unitsUrl":    "https://sweft.example.com/v1/units",
+///   "peersUrl":    "https://sweft.example.com/v1/peers"
+/// }
+/// ```
+///
+/// `discovery_json` is the raw response body from
+/// `GET /.well-known/semanticweft`.  Throws on parse failure or if
+/// `api_base` is missing from the document.
+#[wasm_bindgen(js_name = nodeSessionFromDiscovery)]
+pub fn node_session_from_discovery(
+    discovery_json: &str,
+    own_did: &str,
+) -> Result<JsValue, JsValue> {
+    setup();
+    let session =
+        semanticweft_agent_core::NodeSession::from_discovery(discovery_json, own_did)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+    let obj = serde_json::json!({
+        "apiBase":     session.api_base,
+        "inboxUrl":    session.inbox_url(),
+        "registerUrl": session.register_url(),
+        "unitsUrl":    session.units_url(),
+        "peersUrl":    session.peers_url(),
+    });
+    Ok(JsValue::from_str(&obj.to_string()))
+}
+
+// ── Internal helpers ──────────────────────────────────────────────────────────
+
+fn hex_to_32_bytes(hex: &str) -> Result<[u8; 32], JsValue> {
+    if hex.len() != 64 {
+        return Err(JsValue::from_str(&format!(
+            "seed_hex must be 64 hex characters (32 bytes), got {}",
+            hex.len()
+        )));
+    }
+    let mut bytes = [0u8; 32];
+    for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
+        let hi = hex_nibble(chunk[0])?;
+        let lo = hex_nibble(chunk[1])?;
+        bytes[i] = (hi << 4) | lo;
+    }
+    Ok(bytes)
+}
+
+fn hex_nibble(b: u8) -> Result<u8, JsValue> {
+    match b {
+        b'0'..=b'9' => Ok(b - b'0'),
+        b'a'..=b'f' => Ok(b - b'a' + 10),
+        b'A'..=b'F' => Ok(b - b'A' + 10),
+        _ => Err(JsValue::from_str(&format!("invalid hex character: {}", b as char))),
+    }
 }

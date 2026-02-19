@@ -16,6 +16,7 @@ wasm-bindgen = "0.2"
 console_error_panic_hook = { version = "0.1", optional = true }
 serde_json = "1"
 semanticweft = { path = "../core" }
+semanticweft-agent-core = { path = "../agent-core" }
 
 # On wasm32 targets, enable JS-based randomness and time so that UUIDv7
 # generation and chrono::Utc::now() work inside the browser / Deno / Node.
