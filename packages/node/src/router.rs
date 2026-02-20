@@ -7,6 +7,7 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
+use ed25519_dalek::SigningKey;
 
 use crate::{
     config::NodeConfig,
@@ -15,7 +16,11 @@ use crate::{
 };
 
 /// Build the complete application router with shared state.
-pub fn build_router(storage: Arc<dyn Storage>, config: NodeConfig) -> Router {
+pub fn build_router(
+    storage: Arc<dyn Storage>,
+    config: NodeConfig,
+    signing_key: Arc<SigningKey>,
+) -> Router {
     let http_client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -25,6 +30,7 @@ pub fn build_router(storage: Arc<dyn Storage>, config: NodeConfig) -> Router {
         storage,
         config,
         http_client,
+        signing_key,
     };
 
     Router::new()
@@ -43,7 +49,10 @@ pub fn build_router(storage: Arc<dyn Storage>, config: NodeConfig) -> Router {
             "/v1/agents/{did}",
             post(agents::register).get(agents::get_agent),
         )
-        .route("/v1/agents/{did}/inbox", get(agents::inbox))
+        .route(
+            "/v1/agents/{did}/inbox",
+            get(agents::inbox).post(agents::inbox_deliver),
+        )
         // Follows
         .route(
             "/v1/agents/{did}/following",

@@ -3,12 +3,13 @@
 //! - `POST /v1/agents/{did}` — register or update an agent profile.
 //! - `GET  /v1/agents/{did}` — retrieve an agent profile.
 //! - `GET  /v1/agents/{did}/inbox` — retrieve the agent's pending inbox items.
+//! - `POST /v1/agents/{did}/inbox` — deliver a unit to the agent's inbox (S2S, requires NodeAuth).
 //!
 //! # Inbox
 //!
-//! The inbox endpoint currently returns an empty response. Full fan-out
-//! delivery (storing units in per-agent inbox queues and letting agents drain
-//! them) is deferred to the federation implementation phase.
+//! The inbox GET endpoint lists units already delivered to the agent's inbox.
+//! The inbox POST endpoint accepts node-to-node push delivery, authenticated
+//! via an HTTP Signature whose key is embedded in the delivering node's `did:key`.
 
 use axum::{
     extract::{Path, Query, State},
@@ -17,10 +18,11 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
+use semanticweft::{validate_unit, SemanticUnit};
 use semanticweft_node_api::{AgentProfile, InboxResponse, RegisterRequest};
 
 use crate::error::AppError;
-use crate::middleware::auth::RequireAuth;
+use crate::middleware::auth::{NodeAuth, RequireAuth};
 
 use super::AppState;
 
@@ -116,4 +118,35 @@ pub async fn inbox(
     };
 
     Ok(Json(InboxResponse { items, next_cursor }))
+}
+
+/// `POST /v1/agents/{did}/inbox` — node-to-node push delivery (spec §8.6).
+///
+/// Accepts a [`SemanticUnit`] from a remote node and delivers it to the
+/// target agent's inbox. Requires a valid HTTP Signature from the delivering
+/// node; the key is decoded directly from the `did:key` in the `keyId` field
+/// (no storage lookup needed since `did:key` is self-describing).
+///
+/// Returns 201 on success, 401 if the signature is invalid, 404 if the agent
+/// is not registered on this node, or 422 if the unit fails validation.
+pub async fn inbox_deliver(
+    State(state): State<AppState>,
+    Path(did): Path<String>,
+    _node_auth: NodeAuth,
+    Json(unit): Json<SemanticUnit>,
+) -> Result<impl IntoResponse, AppError> {
+    // Verify the target agent is registered on this node.
+    state
+        .storage
+        .get_agent(&did)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("agent {did} not found")))?;
+
+    // Validate the unit structure.
+    validate_unit(&unit).map_err(|e| AppError::UnprocessableEntity(e.to_string()))?;
+
+    // Deliver to the agent's inbox.
+    state.storage.deliver_to_inbox(&did, &unit).await?;
+
+    Ok(StatusCode::CREATED)
 }

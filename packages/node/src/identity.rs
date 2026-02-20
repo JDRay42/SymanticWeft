@@ -66,6 +66,11 @@ impl NodeIdentity {
         let pub_key = self.signing_key.verifying_key().to_bytes();
         encode_multibase(&pub_key)
     }
+
+    /// The node's Ed25519 signing key, for use in outbound HTTP Signatures.
+    pub fn signing_key(&self) -> &SigningKey {
+        &self.signing_key
+    }
 }
 
 /// Encode a raw 32-byte Ed25519 public key as a full `did:key` DID string.

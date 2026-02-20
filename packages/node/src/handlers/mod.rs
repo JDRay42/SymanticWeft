@@ -24,4 +24,6 @@ pub struct AppState {
     /// HTTP client for outbound requests (remote fan-out, etc.).
     /// `reqwest::Client` is cheaply clonable — it wraps an `Arc` internally.
     pub http_client: reqwest::Client,
+    /// The node's Ed25519 signing key, used to authenticate outbound S2S requests.
+    pub signing_key: Arc<ed25519_dalek::SigningKey>,
 }

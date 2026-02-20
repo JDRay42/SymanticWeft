@@ -30,7 +30,7 @@ use semanticweft_node_api::{ListResponse, SubgraphResponse};
 
 use crate::{
     error::AppError,
-    middleware::auth::OptionalAuth,
+    middleware::auth::{build_outbound_signature, OptionalAuth},
     storage::{Storage, StorageError, UnitFilter},
 };
 
@@ -110,12 +110,13 @@ pub async fn submit(
     let storage = Arc::clone(&state.storage);
     let client = state.http_client.clone();
     let node_did = state.config.node_id.clone();
+    let signing_key = Arc::clone(&state.signing_key);
     let unit_fanout = unit.clone();
     tokio::spawn(async move {
         if let Err(e) = local_fanout(Arc::clone(&storage), unit_fanout.clone()).await {
             tracing::warn!("local fan-out error: {e}");
         }
-        remote_fanout(client, unit_fanout, storage, node_did).await;
+        remote_fanout(client, unit_fanout, storage, node_did, signing_key).await;
     });
 
     Ok((StatusCode::CREATED, Json(unit)))
@@ -197,6 +198,7 @@ async fn remote_fanout(
     unit: SemanticUnit,
     storage: Arc<dyn Storage>,
     node_did: String,
+    signing_key: std::sync::Arc<ed25519_dalek::SigningKey>,
 ) {
     // Only `limited` units use push delivery (ADR-0009).
     let vis = unit.visibility.clone().unwrap_or(Visibility::Public);
@@ -311,7 +313,35 @@ async fn remote_fanout(
         };
         for addr in addrs {
             let inbox = addr.inbox_url(api_base);
-            match client.post(&inbox).json(&unit).send().await {
+            // Parse the inbox URL to extract host and path for signing.
+            let (req_host, req_path) = match reqwest::Url::parse(&inbox) {
+                Ok(parsed) => {
+                    let host: String = parsed.host_str().unwrap_or(hostname.as_str()).to_string();
+                    let path = if let Some(q) = parsed.query() {
+                        format!("{}?{}", parsed.path(), q)
+                    } else {
+                        parsed.path().to_string()
+                    };
+                    (host, path)
+                }
+                Err(_) => (hostname.clone(), format!("/v1/agents/{}/inbox", addr.did)),
+            };
+            let (date_val, sig_val) = build_outbound_signature(
+                &signing_key,
+                &node_did,
+                "post",
+                &req_path,
+                &req_host,
+            );
+            match client
+                .post(&inbox)
+                .header("date", &date_val)
+                .header("signature", &sig_val)
+                .header("host", &req_host)
+                .json(&unit)
+                .send()
+                .await
+            {
                 Ok(resp) if resp.status().is_success() => {
                     tracing::debug!(
                         "remote_fanout: delivered unit {} to {addr}",
@@ -611,7 +641,8 @@ mod tests {
     fn build_app() -> axum::Router {
         let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
         let config = NodeConfig::from_env();
-        build_router(storage, config)
+        let signing_key = Arc::new(SigningKey::generate(&mut OsRng));
+        build_router(storage, config, signing_key)
     }
 
     fn make_unit() -> SemanticUnit {
