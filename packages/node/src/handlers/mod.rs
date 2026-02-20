@@ -11,6 +11,7 @@ pub mod follows;
 pub mod node;
 pub mod peers;
 pub mod units;
+pub mod webfinger;
 
 use std::sync::Arc;
 

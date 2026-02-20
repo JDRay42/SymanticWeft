@@ -11,7 +11,7 @@ use ed25519_dalek::SigningKey;
 
 use crate::{
     config::NodeConfig,
-    handlers::{agents, follows, node, peers, units, AppState},
+    handlers::{agents, follows, node, peers, units, webfinger, AppState},
     middleware::rate_limit::{rate_limit_middleware, RateLimiter},
     storage::Storage,
 };
@@ -38,8 +38,9 @@ pub fn build_router(
     };
 
     Router::new()
-        // Node discovery
+        // Node discovery and WebFinger (RFC 7033) agent resolution
         .route("/.well-known/semanticweft", get(node::well_known))
+        .route("/.well-known/webfinger", get(webfinger::webfinger))
         // Units
         .route("/v1/units", post(units::submit).get(units::list))
         .route("/v1/units/{id}", get(units::get_by_id))
