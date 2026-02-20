@@ -537,6 +537,7 @@ mod tests {
             bootstrap_peers: vec![],
             max_peers: 100,
             public_key: None,
+            rate_limit_per_minute: 0, // disabled in tests
         };
         // Use a dummy signing key for tests
         let node_signing_key = Arc::new(SigningKey::generate(&mut OsRng));

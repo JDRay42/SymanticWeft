@@ -12,6 +12,7 @@ use ed25519_dalek::SigningKey;
 use crate::{
     config::NodeConfig,
     handlers::{agents, follows, node, peers, units, AppState},
+    middleware::rate_limit::{rate_limit_middleware, RateLimiter},
     storage::Storage,
 };
 
@@ -25,6 +26,9 @@ pub fn build_router(
         .timeout(Duration::from_secs(10))
         .build()
         .expect("failed to build HTTP client for handler state");
+
+    // Build the per-IP rate limiter from config (0 = disabled).
+    let rate_limiter = Arc::new(RateLimiter::new(config.rate_limit_per_minute));
 
     let state = AppState {
         storage,
@@ -64,4 +68,8 @@ pub fn build_router(
             delete(follows::unfollow),
         )
         .with_state(state)
+        // Rate limiting layer applied after routing so it can see the full request.
+        .layer(axum::middleware::from_fn(move |req, next| {
+            rate_limit_middleware(Arc::clone(&rate_limiter), req, next)
+        }))
 }
