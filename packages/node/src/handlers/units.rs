@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
-    response::IntoResponse,
+    http::{header, HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     Json,
 };
 use serde::Deserialize;
@@ -509,15 +509,64 @@ pub async fn list(
 
 /// `GET /v1/sync` — the federation pull endpoint.
 ///
-/// Semantically identical to `GET /v1/units` but signals federation intent.
-/// Always returns public units only (nodes do not receive private data).
+/// Returns public units for node-to-node replication. Supports two response
+/// formats negotiated via the `Accept` header:
+///
+/// - **`application/json`** (default): returns a `ListResponse` JSON object
+///   with `units` array and `has_more` flag, suitable for polling clients.
+///
+/// - **`text/event-stream`**: returns a Server-Sent Events stream. Each unit
+///   is emitted as one SSE event whose `id` field is the unit's UUID and whose
+///   `data` field is the unit's JSON. A final `event: end` marks the end of
+///   the current page. Clients should use the `id` of the last received event
+///   as the `Last-Event-ID` header on reconnect to resume from that cursor.
+///
+/// The `Last-Event-ID` header (when present) is used as the keyset pagination
+/// cursor, identical to the `after` query parameter.
 pub async fn sync(
     State(state): State<AppState>,
-    Query(params): Query<UnitQueryParams>,
-) -> Result<Json<ListResponse>, AppError> {
+    headers: HeaderMap,
+    Query(mut params): Query<UnitQueryParams>,
+) -> Result<Response, AppError> {
+    // `Last-Event-ID` from a reconnecting SSE client acts as the cursor.
+    if params.after.is_none() {
+        if let Some(last_id) = headers.get("last-event-id").and_then(|v| v.to_str().ok()) {
+            params.after = Some(last_id.to_string());
+        }
+    }
+
+    let wants_sse = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|accept| accept.contains("text/event-stream"))
+        .unwrap_or(false);
+
     let filter = build_filter(params, vec![Visibility::Public]);
     let (units, has_more) = state.storage.list_units(&filter).await?;
-    Ok(Json(ListResponse::from_page(units, has_more)))
+
+    if wants_sse {
+        // Build a Server-Sent Events response.
+        // Each unit is one event; the final "end" event signals page completion.
+        let mut body = String::new();
+        for unit in &units {
+            let json = serde_json::to_string(unit)
+                .unwrap_or_else(|_| "{}".to_string());
+            body.push_str(&format!("id: {}\ndata: {}\n\n", unit.id, json));
+        }
+        // Terminal event so the client knows this page is done.
+        let has_more_str = if has_more { "true" } else { "false" };
+        body.push_str(&format!("event: end\ndata: {{\"has_more\":{has_more_str}}}\n\n"));
+
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/event-stream; charset=utf-8")
+            .header(header::CACHE_CONTROL, "no-cache")
+            .header("x-accel-buffering", "no")
+            .body(axum::body::Body::from(body))
+            .unwrap())
+    } else {
+        Ok(Json(ListResponse::from_page(units, has_more)).into_response())
+    }
 }
 
 // ---------------------------------------------------------------------------
