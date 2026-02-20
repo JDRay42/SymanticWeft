@@ -29,7 +29,16 @@ reqwest = { version = "0.12", features = ["json"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"
 bs58 = "0.5"
+chrono = { version = "0.4", features = ["clock"] }
+httpdate = "1"
 hex = "0.4"
+
+urlencoding = "2"
 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+rand = "0.8"

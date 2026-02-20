@@ -4,7 +4,8 @@
 //!
 //! Business logic, not storage, decides what a caller may see:
 //! - Unauthenticated callers receive `public` units only.
-//! - TODO: Extend once auth middleware is in place (network + limited units).
+//! - Authenticated callers may also receive `network` units if they follow the author.
+//! - `limited` units are visible only if the caller DID is in the unit's audience.
 //!
 //! # Fan-out
 //!
@@ -18,8 +19,8 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
-    response::IntoResponse,
+    http::{header, HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     Json,
 };
 use serde::Deserialize;
@@ -29,6 +30,7 @@ use semanticweft_node_api::{ListResponse, SubgraphResponse};
 
 use crate::{
     error::AppError,
+    middleware::auth::{build_outbound_signature, OptionalAuth},
     storage::{Storage, StorageError, UnitFilter},
 };
 
@@ -80,9 +82,27 @@ pub struct SubgraphQueryParams {
 /// nodes also runs in the same detached task.
 pub async fn submit(
     State(state): State<AppState>,
+    auth: OptionalAuth,
     Json(unit): Json<SemanticUnit>,
 ) -> Result<impl IntoResponse, AppError> {
     validate_unit(&unit).map_err(|e| AppError::UnprocessableEntity(e.to_string()))?;
+    if unit.proof.is_some() {
+        semanticweft::verify_proof(&unit).map_err(|e| AppError::BadRequest(e.to_string()))?;
+    }
+
+    // Non-public units require authentication as the unit's author.
+    let vis = unit.visibility.as_ref().unwrap_or(&Visibility::Public);
+    if *vis != Visibility::Public {
+        let caller_did = auth.0.as_deref().ok_or_else(|| {
+            AppError::Unauthorized("authentication required for non-public units".into())
+        })?;
+        if caller_did != unit.author {
+            return Err(AppError::Forbidden(
+                "you may only submit units authored by your own DID".into(),
+            ));
+        }
+    }
+
     state.storage.put_unit(&unit).await?;
 
     // Local and remote fan-out run together in a detached task so the HTTP
@@ -90,12 +110,13 @@ pub async fn submit(
     let storage = Arc::clone(&state.storage);
     let client = state.http_client.clone();
     let node_did = state.config.node_id.clone();
+    let signing_key = Arc::clone(&state.signing_key);
     let unit_fanout = unit.clone();
     tokio::spawn(async move {
         if let Err(e) = local_fanout(Arc::clone(&storage), unit_fanout.clone()).await {
             tracing::warn!("local fan-out error: {e}");
         }
-        remote_fanout(client, unit_fanout, storage, node_did).await;
+        remote_fanout(client, unit_fanout, storage, node_did, signing_key).await;
     });
 
     Ok((StatusCode::CREATED, Json(unit)))
@@ -177,6 +198,7 @@ async fn remote_fanout(
     unit: SemanticUnit,
     storage: Arc<dyn Storage>,
     node_did: String,
+    signing_key: std::sync::Arc<ed25519_dalek::SigningKey>,
 ) {
     // Only `limited` units use push delivery (ADR-0009).
     let vis = unit.visibility.clone().unwrap_or(Visibility::Public);
@@ -291,7 +313,35 @@ async fn remote_fanout(
         };
         for addr in addrs {
             let inbox = addr.inbox_url(api_base);
-            match client.post(&inbox).json(&unit).send().await {
+            // Parse the inbox URL to extract host and path for signing.
+            let (req_host, req_path) = match reqwest::Url::parse(&inbox) {
+                Ok(parsed) => {
+                    let host: String = parsed.host_str().unwrap_or(hostname.as_str()).to_string();
+                    let path = if let Some(q) = parsed.query() {
+                        format!("{}?{}", parsed.path(), q)
+                    } else {
+                        parsed.path().to_string()
+                    };
+                    (host, path)
+                }
+                Err(_) => (hostname.clone(), format!("/v1/agents/{}/inbox", addr.did)),
+            };
+            let (date_val, sig_val) = build_outbound_signature(
+                &signing_key,
+                &node_did,
+                "post",
+                &req_path,
+                &req_host,
+            );
+            match client
+                .post(&inbox)
+                .header("date", &date_val)
+                .header("signature", &sig_val)
+                .header("host", &req_host)
+                .json(&unit)
+                .send()
+                .await
+            {
                 Ok(resp) if resp.status().is_success() => {
                     tracing::debug!(
                         "remote_fanout: delivered unit {} to {addr}",
@@ -389,10 +439,11 @@ async fn notify_author_of_failure(
 
 /// `GET /v1/units/{id}` — retrieve a unit by its UUIDv7 ID.
 ///
-/// Returns 404 for non-public units (visibility enforcement; see module docs).
+/// Visibility is enforced per auth state (see module docs).
 pub async fn get_by_id(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    auth: OptionalAuth,
 ) -> Result<Json<SemanticUnit>, AppError> {
     let unit = state
         .storage
@@ -400,11 +451,33 @@ pub async fn get_by_id(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("unit {id} not found")))?;
 
-    // Unauthenticated: only serve public units.
-    // TODO: expand when auth middleware is added.
     let vis = unit.visibility.as_ref().unwrap_or(&Visibility::Public);
-    if *vis != Visibility::Public {
-        return Err(AppError::NotFound(format!("unit {id} not found")));
+    match vis {
+        Visibility::Public => {} // always visible
+        Visibility::Network => {
+            // Visible to authenticated followers of the author.
+            let caller_did = auth.0.as_deref().ok_or_else(|| {
+                AppError::NotFound(format!("unit {id} not found"))
+            })?;
+            let is_follower = state
+                .storage
+                .is_following(caller_did, &unit.author)
+                .await
+                .unwrap_or(false);
+            if !is_follower {
+                return Err(AppError::NotFound(format!("unit {id} not found")));
+            }
+        }
+        Visibility::Limited => {
+            // Visible only if caller DID is in unit.audience.
+            let caller_did = auth.0.as_deref().ok_or_else(|| {
+                AppError::NotFound(format!("unit {id} not found"))
+            })?;
+            let audience = unit.audience.as_deref().unwrap_or(&[]);
+            if !audience.iter().any(|a| a == caller_did) {
+                return Err(AppError::NotFound(format!("unit {id} not found")));
+            }
+        }
     }
 
     Ok(Json(unit))
@@ -418,8 +491,14 @@ pub async fn get_by_id(
 pub async fn list(
     State(state): State<AppState>,
     Query(params): Query<UnitQueryParams>,
+    auth: OptionalAuth,
 ) -> Result<Json<ListResponse>, AppError> {
-    let filter = build_filter(params, vec![Visibility::Public]);
+    let visibilities = if auth.0.is_some() {
+        vec![Visibility::Public, Visibility::Network]
+    } else {
+        vec![Visibility::Public]
+    };
+    let filter = build_filter(params, visibilities);
     let (units, has_more) = state.storage.list_units(&filter).await?;
     Ok(Json(ListResponse::from_page(units, has_more)))
 }
@@ -430,15 +509,64 @@ pub async fn list(
 
 /// `GET /v1/sync` — the federation pull endpoint.
 ///
-/// Semantically identical to `GET /v1/units` but signals federation intent.
-/// Always returns public units only (nodes do not receive private data).
+/// Returns public units for node-to-node replication. Supports two response
+/// formats negotiated via the `Accept` header:
+///
+/// - **`application/json`** (default): returns a `ListResponse` JSON object
+///   with `units` array and `has_more` flag, suitable for polling clients.
+///
+/// - **`text/event-stream`**: returns a Server-Sent Events stream. Each unit
+///   is emitted as one SSE event whose `id` field is the unit's UUID and whose
+///   `data` field is the unit's JSON. A final `event: end` marks the end of
+///   the current page. Clients should use the `id` of the last received event
+///   as the `Last-Event-ID` header on reconnect to resume from that cursor.
+///
+/// The `Last-Event-ID` header (when present) is used as the keyset pagination
+/// cursor, identical to the `after` query parameter.
 pub async fn sync(
     State(state): State<AppState>,
-    Query(params): Query<UnitQueryParams>,
-) -> Result<Json<ListResponse>, AppError> {
+    headers: HeaderMap,
+    Query(mut params): Query<UnitQueryParams>,
+) -> Result<Response, AppError> {
+    // `Last-Event-ID` from a reconnecting SSE client acts as the cursor.
+    if params.after.is_none() {
+        if let Some(last_id) = headers.get("last-event-id").and_then(|v| v.to_str().ok()) {
+            params.after = Some(last_id.to_string());
+        }
+    }
+
+    let wants_sse = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|accept| accept.contains("text/event-stream"))
+        .unwrap_or(false);
+
     let filter = build_filter(params, vec![Visibility::Public]);
     let (units, has_more) = state.storage.list_units(&filter).await?;
-    Ok(Json(ListResponse::from_page(units, has_more)))
+
+    if wants_sse {
+        // Build a Server-Sent Events response.
+        // Each unit is one event; the final "end" event signals page completion.
+        let mut body = String::new();
+        for unit in &units {
+            let json = serde_json::to_string(unit)
+                .unwrap_or_else(|_| "{}".to_string());
+            body.push_str(&format!("id: {}\ndata: {}\n\n", unit.id, json));
+        }
+        // Terminal event so the client knows this page is done.
+        let has_more_str = if has_more { "true" } else { "false" };
+        body.push_str(&format!("event: end\ndata: {{\"has_more\":{has_more_str}}}\n\n"));
+
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/event-stream; charset=utf-8")
+            .header(header::CACHE_CONTROL, "no-cache")
+            .header("x-accel-buffering", "no")
+            .body(axum::body::Body::from(body))
+            .unwrap())
+    } else {
+        Ok(Json(ListResponse::from_page(units, has_more)).into_response())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -541,5 +669,157 @@ fn build_filter(params: UnitQueryParams, visibilities: Vec<Visibility>) -> UnitF
         after: params.after,
         limit,
         visibilities,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+    use tower::ServiceExt;
+    use semanticweft::{sign_unit, SemanticUnit, UnitType};
+
+    use crate::config::NodeConfig;
+    use crate::router::build_router;
+    use crate::storage::memory::MemoryStorage;
+
+    fn build_app() -> axum::Router {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let config = NodeConfig::from_env();
+        let signing_key = Arc::new(SigningKey::generate(&mut OsRng));
+        build_router(storage, config, signing_key)
+    }
+
+    fn make_unit() -> SemanticUnit {
+        SemanticUnit::new(
+            UnitType::Assertion,
+            "Test content for proof integration test.",
+            "did:key:z6MkTest",
+        )
+    }
+
+    fn make_signing_key_and_did() -> (SigningKey, String) {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+        let pub_bytes = verifying_key.to_bytes();
+        let mut multicodec = vec![0xed_u8, 0x01];
+        multicodec.extend_from_slice(&pub_bytes);
+        let did = format!("did:key:z{}", bs58::encode(&multicodec).into_string());
+        (signing_key, did)
+    }
+
+    #[tokio::test]
+    async fn submit_unit_without_proof_returns_201() {
+        let app = build_app();
+        let unit = make_unit();
+        let body = serde_json::to_string(&unit).unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/units")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn submit_unit_with_valid_proof_returns_201() {
+        let app = build_app();
+        let mut unit = make_unit();
+        let (signing_key, did) = make_signing_key_and_did();
+        sign_unit(&mut unit, &signing_key, &did).unwrap();
+        let body = serde_json::to_string(&unit).unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/units")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn submit_unit_with_tampered_proof_returns_400() {
+        let app = build_app();
+        let mut unit = make_unit();
+        let (signing_key, did) = make_signing_key_and_did();
+        sign_unit(&mut unit, &signing_key, &did).unwrap();
+        // Tamper with content after signing
+        unit.content = "tampered content".into();
+        let body = serde_json::to_string(&unit).unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/units")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn sync_with_sse_accept_returns_event_stream() {
+        use http_body_util::BodyExt;
+
+        let app = build_app();
+
+        // Submit a public unit first.
+        let unit = make_unit();
+        let unit_id = unit.id.clone();
+        let submit_req = Request::builder()
+            .method("POST")
+            .uri("/v1/units")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&unit).unwrap()))
+            .unwrap();
+        let submit_resp = app.clone().oneshot(submit_req).await.unwrap();
+        assert_eq!(submit_resp.status(), StatusCode::CREATED);
+
+        // Now GET /v1/sync with Accept: text/event-stream.
+        let sync_req = Request::builder()
+            .method("GET")
+            .uri("/v1/sync")
+            .header("accept", "text/event-stream")
+            .body(Body::empty())
+            .unwrap();
+        let sync_resp = app.oneshot(sync_req).await.unwrap();
+
+        assert_eq!(sync_resp.status(), StatusCode::OK);
+        let ct = sync_resp.headers().get("content-type").unwrap().to_str().unwrap();
+        assert!(ct.contains("text/event-stream"), "content-type should be text/event-stream, got {ct}");
+
+        let body_bytes = sync_resp.into_body().collect().await.unwrap().to_bytes();
+        let body_text = std::str::from_utf8(&body_bytes).unwrap();
+
+        // The unit ID should appear as an SSE event id.
+        assert!(body_text.contains(&format!("id: {unit_id}")),
+            "SSE body should contain 'id: {unit_id}':\n{body_text}");
+        // Each unit's data should be present.
+        assert!(body_text.contains("data: "),
+            "SSE body should contain 'data: ':\n{body_text}");
+        // The end sentinel must be present.
+        assert!(body_text.contains("event: end"),
+            "SSE body should end with 'event: end':\n{body_text}");
+    }
+
+    #[tokio::test]
+    async fn sync_without_sse_accept_returns_json() {
+        let app = build_app();
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/sync")
+            .header("accept", "application/json")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        assert!(ct.contains("application/json"), "should be JSON when SSE not requested, got {ct}");
     }
 }

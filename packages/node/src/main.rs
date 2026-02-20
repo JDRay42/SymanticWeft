@@ -18,6 +18,7 @@
 //! See [`config::NodeConfig::from_env`] for the full list.
 
 mod config;
+mod middleware;
 mod error;
 mod federation;
 mod handlers;
@@ -121,7 +122,7 @@ async fn main() {
         });
     }
 
-    let app = router::build_router(storage, config.clone());
+    let app = router::build_router(storage, config.clone(), std::sync::Arc::new(identity.signing_key().clone()));
 
     tracing::info!("listening on {}", config.bind_addr);
     let listener = tokio::net::TcpListener::bind(config.bind_addr)

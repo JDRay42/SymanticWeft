@@ -41,9 +41,11 @@
 
 pub mod graph;
 pub mod render;
+pub mod signing;
 pub mod types;
 pub mod validation;
 
 pub use graph::Graph;
-pub use types::{Reference, RelType, SemanticUnit, Source, UnitType, Visibility};
+pub use signing::{sign_unit, verify_proof, ProofError, SigningError};
+pub use types::{Proof, Reference, RelType, SemanticUnit, Source, UnitType, Visibility};
 pub use validation::{validate_unit, ValidationError};

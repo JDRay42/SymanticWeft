@@ -229,6 +229,7 @@ mod tests {
             },
             visibility: None,
             audience: None,
+            proof: None,
             extensions: HashMap::new(),
         }
     }

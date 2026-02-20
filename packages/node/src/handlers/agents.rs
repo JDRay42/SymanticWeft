@@ -3,12 +3,13 @@
 //! - `POST /v1/agents/{did}` — register or update an agent profile.
 //! - `GET  /v1/agents/{did}` — retrieve an agent profile.
 //! - `GET  /v1/agents/{did}/inbox` — retrieve the agent's pending inbox items.
+//! - `POST /v1/agents/{did}/inbox` — deliver a unit to the agent's inbox (S2S, requires NodeAuth).
 //!
 //! # Inbox
 //!
-//! The inbox endpoint currently returns an empty response. Full fan-out
-//! delivery (storing units in per-agent inbox queues and letting agents drain
-//! them) is deferred to the federation implementation phase.
+//! The inbox GET endpoint lists units already delivered to the agent's inbox.
+//! The inbox POST endpoint accepts node-to-node push delivery, authenticated
+//! via an HTTP Signature whose key is embedded in the delivering node's `did:key`.
 
 use axum::{
     extract::{Path, Query, State},
@@ -17,9 +18,11 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
+use semanticweft::{validate_unit, SemanticUnit};
 use semanticweft_node_api::{AgentProfile, InboxResponse, RegisterRequest};
 
 use crate::error::AppError;
+use crate::middleware::auth::{NodeAuth, RequireAuth};
 
 use super::AppState;
 
@@ -39,11 +42,18 @@ pub struct InboxQueryParams {
 pub async fn register(
     State(state): State<AppState>,
     Path(did): Path<String>,
+    auth: RequireAuth,
     Json(req): Json<RegisterRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if req.did != did {
         return Err(AppError::BadRequest(
             "did in request body must match the {did} path parameter".into(),
+        ));
+    }
+
+    if auth.did != did {
+        return Err(AppError::Forbidden(
+            "cannot register as a different DID".into(),
         ));
     }
 
@@ -82,6 +92,7 @@ pub async fn get_agent(
 pub async fn inbox(
     State(state): State<AppState>,
     Path(did): Path<String>,
+    auth: RequireAuth,
     Query(params): Query<InboxQueryParams>,
 ) -> Result<Json<InboxResponse>, AppError> {
     state
@@ -89,6 +100,10 @@ pub async fn inbox(
         .get_agent(&did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("agent {did} not found")))?;
+
+    if auth.did != did {
+        return Err(AppError::NotFound(format!("agent {did} not found")));
+    }
 
     let limit = params.limit.map(|l| l.clamp(1, 100)).unwrap_or(20);
     let (items, has_more) = state
@@ -103,4 +118,174 @@ pub async fn inbox(
     };
 
     Ok(Json(InboxResponse { items, next_cursor }))
+}
+
+/// `POST /v1/agents/{did}/inbox` — node-to-node push delivery (spec §8.6).
+///
+/// Accepts a [`SemanticUnit`] from a remote node and delivers it to the
+/// target agent's inbox. Requires a valid HTTP Signature from the delivering
+/// node; the key is decoded directly from the `did:key` in the `keyId` field
+/// (no storage lookup needed since `did:key` is self-describing).
+///
+/// Returns 201 on success, 401 if the signature is invalid, 404 if the agent
+/// is not registered on this node, or 422 if the unit fails validation.
+pub async fn inbox_deliver(
+    State(state): State<AppState>,
+    Path(did): Path<String>,
+    _node_auth: NodeAuth,
+    Json(unit): Json<SemanticUnit>,
+) -> Result<impl IntoResponse, AppError> {
+    // Verify the target agent is registered on this node.
+    state
+        .storage
+        .get_agent(&did)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("agent {did} not found")))?;
+
+    // Validate the unit structure.
+    validate_unit(&unit).map_err(|e| AppError::UnprocessableEntity(e.to_string()))?;
+
+    // Deliver to the agent's inbox.
+    state.storage.deliver_to_inbox(&did, &unit).await?;
+
+    Ok(StatusCode::CREATED)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::{body::Body, http::{Request, StatusCode}};
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+    use semanticweft::{SemanticUnit, UnitType};
+    use semanticweft_node_api::AgentProfile;
+    use tower::ServiceExt;
+
+    use crate::{
+        config::NodeConfig,
+        middleware::auth::build_outbound_signature,
+        router::build_router,
+        storage::{memory::MemoryStorage, Storage},
+    };
+
+    fn make_node_key_and_did() -> (SigningKey, String) {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let pub_bytes = signing_key.verifying_key().to_bytes();
+        let mut multicodec = vec![0xed_u8, 0x01];
+        multicodec.extend_from_slice(&pub_bytes);
+        let did = format!("did:key:z{}", bs58::encode(&multicodec).into_string());
+        (signing_key, did)
+    }
+
+    fn build_app(storage: Arc<dyn Storage>) -> axum::Router {
+        let config = NodeConfig {
+            node_id: "did:key:zNode".into(),
+            name: None,
+            api_base: "http://localhost/v1".into(),
+            contact: None,
+            bind_addr: "127.0.0.1:3000".parse().unwrap(),
+            db_path: None,
+            sync_interval_secs: 60,
+            bootstrap_peers: vec![],
+            max_peers: 100,
+            public_key: None,
+            rate_limit_per_minute: 0,
+        };
+        let signing_key = Arc::new(SigningKey::generate(&mut OsRng));
+        build_router(storage, config, signing_key)
+    }
+
+    fn make_unit(author: &str) -> SemanticUnit {
+        SemanticUnit::new(UnitType::Assertion, "Test inbox delivery.", author)
+    }
+
+    #[tokio::test]
+    async fn inbox_deliver_with_valid_node_sig_returns_201() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let agent_did = "did:key:z6MkAgentTarget";
+
+        // Register the target agent.
+        storage.put_agent(&AgentProfile {
+            did: agent_did.to_string(),
+            inbox_url: format!("http://localhost/v1/agents/{agent_did}/inbox"),
+            display_name: None,
+            public_key: None,
+        }).await.unwrap();
+
+        let (node_key, node_did) = make_node_key_and_did();
+        let unit = make_unit(node_did.as_str());
+        let path = format!("/v1/agents/{agent_did}/inbox");
+        let (date, sig_header) = build_outbound_signature(
+            &node_key, &node_did, "post", &path, "localhost",
+        );
+
+        let req = Request::builder()
+            .method("POST")
+            .uri(&path)
+            .header("content-type", "application/json")
+            .header("host", "localhost")
+            .header("date", &date)
+            .header("signature", &sig_header)
+            .body(Body::from(serde_json::to_string(&unit).unwrap()))
+            .unwrap();
+
+        let resp = build_app(storage).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn inbox_deliver_without_signature_returns_401() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let agent_did = "did:key:z6MkAgentNoSig";
+
+        storage.put_agent(&AgentProfile {
+            did: agent_did.to_string(),
+            inbox_url: format!("http://localhost/v1/agents/{agent_did}/inbox"),
+            display_name: None,
+            public_key: None,
+        }).await.unwrap();
+
+        let unit = make_unit("did:key:z6MkSomeSender");
+        let path = format!("/v1/agents/{agent_did}/inbox");
+
+        let req = Request::builder()
+            .method("POST")
+            .uri(&path)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&unit).unwrap()))
+            .unwrap();
+
+        let resp = build_app(storage).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn inbox_deliver_to_unknown_agent_returns_404() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let (node_key, node_did) = make_node_key_and_did();
+        let unknown_did = "did:key:z6MkNotRegistered";
+        let unit = make_unit(&node_did);
+        let path = format!("/v1/agents/{unknown_did}/inbox");
+        let (date, sig_header) = build_outbound_signature(
+            &node_key, &node_did, "post", &path, "localhost",
+        );
+
+        let req = Request::builder()
+            .method("POST")
+            .uri(&path)
+            .header("content-type", "application/json")
+            .header("host", "localhost")
+            .header("date", &date)
+            .header("signature", &sig_header)
+            .body(Body::from(serde_json::to_string(&unit).unwrap()))
+            .unwrap();
+
+        let resp = build_app(storage).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
 }

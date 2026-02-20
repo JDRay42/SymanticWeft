@@ -191,6 +191,7 @@ mod tests {
             references: None,
             visibility: None,
             audience: None,
+            proof: None,
             extensions: HashMap::new(),
         }
     }
@@ -317,6 +318,7 @@ mod tests {
                     references: None,
                     visibility: None,
                     audience: None,
+                    proof: None,
                     extensions: HashMap::new(),
                 };
                 Json(ListResponse::from_page(vec![unit], true))
@@ -333,6 +335,7 @@ mod tests {
                     references: None,
                     visibility: None,
                     audience: None,
+                    proof: None,
                     extensions: HashMap::new(),
                 };
                 Json(ListResponse::from_page(vec![unit], false))

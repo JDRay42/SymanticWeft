@@ -18,6 +18,7 @@ use std::net::SocketAddr;
 /// | `SWEFT_SYNC_INTERVAL_SECS` | `60` | Seconds between federation sync rounds |
 /// | `SWEFT_BOOTSTRAP_PEERS` | (absent) | Comma-separated peer API base URLs |
 /// | `SWEFT_MAX_PEERS` | `100` | Maximum number of peers to track |
+/// | `SWEFT_RATE_LIMIT` | `60` | Max requests per minute per client IP (0 = unlimited) |
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
     /// Stable DID identifier for this node. Set to a generated `did:key` in
@@ -55,6 +56,11 @@ pub struct NodeConfig {
     /// This node's Ed25519 public key, multibase-encoded (`z`-prefixed base58btc).
     /// `None` here; set in `main` after identity initialisation.
     pub public_key: Option<String>,
+
+    /// Maximum number of requests per minute per client IP.
+    /// `0` disables rate limiting entirely.
+    /// Set via `SWEFT_RATE_LIMIT`. Default: 60.
+    pub rate_limit_per_minute: u32,
 }
 
 impl NodeConfig {
@@ -90,6 +96,11 @@ impl NodeConfig {
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(60);
 
+        let rate_limit_per_minute = std::env::var("SWEFT_RATE_LIMIT")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(60);
+
         // Sentinel replaced in main after identity init.
         let node_id = std::env::var("SWEFT_NODE_ID")
             .unwrap_or_else(|_| "__generate__".into());
@@ -105,6 +116,7 @@ impl NodeConfig {
             bootstrap_peers,
             max_peers,
             public_key: None,
+            rate_limit_per_minute,
         }
     }
 

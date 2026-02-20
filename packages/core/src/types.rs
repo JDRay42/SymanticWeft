@@ -199,6 +199,20 @@ impl std::str::FromStr for Visibility {
     }
 }
 
+/// Cryptographic proof of authorship attached to a [`SemanticUnit`].
+///
+/// The proof is optional; a unit without a proof is structurally valid.
+/// See `docs/decisions/0002-signature-scheme.md` for the signing protocol.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Proof {
+    /// DID URL identifying the signing key: `did:key:z6Mk...#z6Mk...`
+    pub method: String,
+    /// ISO 8601 timestamp when this proof was created.
+    pub created: String,
+    /// Base58btc-encoded Ed25519 signature with multibase `z` prefix.
+    pub value: String,
+}
+
 /// A Semantic Unit — the fundamental record type of the SemanticWeft protocol.
 ///
 /// Units are immutable once created. An agent wishing to revise a unit creates
@@ -260,6 +274,10 @@ pub struct SemanticUnit {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audience: Option<Vec<String>>,
 
+    /// Cryptographic proof of authorship. Optional — absent means unsigned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proof: Option<Proof>,
+
     /// Extension fields (`x-<reverse-domain>.<name>`).
     ///
     /// Captured via `#[serde(flatten)]` so they round-trip cleanly through
@@ -290,6 +308,7 @@ impl SemanticUnit {
             references: None,
             visibility: None,
             audience: None,
+            proof: None,
             extensions: HashMap::new(),
         }
     }
