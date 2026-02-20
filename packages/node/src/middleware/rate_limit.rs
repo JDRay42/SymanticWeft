@@ -187,4 +187,57 @@ mod tests {
         assert!(rl.check("2.2.2.2").is_ok()); // different IP, own bucket
         assert!(rl.check("1.1.1.1").is_err()); // 1.1.1.1 is now exhausted
     }
+
+    /// Verify that the rate limiter wired into the Axum router actually returns
+    /// HTTP 429 with a `Retry-After` header when the configured limit is exceeded.
+    #[tokio::test]
+    async fn http_layer_returns_429_with_retry_after_when_limit_exceeded() {
+        use std::sync::Arc;
+        use axum::{body::Body, http::{Request, StatusCode}};
+        use ed25519_dalek::SigningKey;
+        use rand::rngs::OsRng;
+        use tower::ServiceExt;
+        use crate::{config::NodeConfig, router::build_router, storage::{memory::MemoryStorage, Storage}};
+
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let config = NodeConfig {
+            node_id: "did:key:zNode".into(),
+            name: None,
+            api_base: "http://localhost/v1".into(),
+            contact: None,
+            bind_addr: "127.0.0.1:3000".parse().unwrap(),
+            db_path: None,
+            sync_interval_secs: 60,
+            bootstrap_peers: vec![],
+            max_peers: 100,
+            public_key: None,
+            rate_limit_per_minute: 2, // very tight — easier to hit in tests
+        };
+        let signing_key = Arc::new(SigningKey::generate(&mut OsRng));
+        let app = build_router(storage, config, signing_key);
+
+        // First two requests to the same "unknown" IP should succeed.
+        for i in 1..=2 {
+            let req = Request::builder()
+                .method("GET")
+                .uri("/v1/sync")
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "request {i} should succeed");
+        }
+
+        // Third request exceeds the per-minute limit.
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/sync")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS, "3rd request should be rate-limited");
+        assert!(
+            resp.headers().contains_key("retry-after"),
+            "rate-limited response must include Retry-After header"
+        );
+    }
 }

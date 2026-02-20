@@ -762,4 +762,64 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
+
+    #[tokio::test]
+    async fn sync_with_sse_accept_returns_event_stream() {
+        use http_body_util::BodyExt;
+
+        let app = build_app();
+
+        // Submit a public unit first.
+        let unit = make_unit();
+        let unit_id = unit.id.clone();
+        let submit_req = Request::builder()
+            .method("POST")
+            .uri("/v1/units")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&unit).unwrap()))
+            .unwrap();
+        let submit_resp = app.clone().oneshot(submit_req).await.unwrap();
+        assert_eq!(submit_resp.status(), StatusCode::CREATED);
+
+        // Now GET /v1/sync with Accept: text/event-stream.
+        let sync_req = Request::builder()
+            .method("GET")
+            .uri("/v1/sync")
+            .header("accept", "text/event-stream")
+            .body(Body::empty())
+            .unwrap();
+        let sync_resp = app.oneshot(sync_req).await.unwrap();
+
+        assert_eq!(sync_resp.status(), StatusCode::OK);
+        let ct = sync_resp.headers().get("content-type").unwrap().to_str().unwrap();
+        assert!(ct.contains("text/event-stream"), "content-type should be text/event-stream, got {ct}");
+
+        let body_bytes = sync_resp.into_body().collect().await.unwrap().to_bytes();
+        let body_text = std::str::from_utf8(&body_bytes).unwrap();
+
+        // The unit ID should appear as an SSE event id.
+        assert!(body_text.contains(&format!("id: {unit_id}")),
+            "SSE body should contain 'id: {unit_id}':\n{body_text}");
+        // Each unit's data should be present.
+        assert!(body_text.contains("data: "),
+            "SSE body should contain 'data: ':\n{body_text}");
+        // The end sentinel must be present.
+        assert!(body_text.contains("event: end"),
+            "SSE body should end with 'event: end':\n{body_text}");
+    }
+
+    #[tokio::test]
+    async fn sync_without_sse_accept_returns_json() {
+        let app = build_app();
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/sync")
+            .header("accept", "application/json")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        assert!(ct.contains("application/json"), "should be JSON when SSE not requested, got {ct}");
+    }
 }
