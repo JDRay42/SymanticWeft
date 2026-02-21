@@ -17,6 +17,7 @@
 //! | GET | `/.well-known/semanticweft` | → [`NodeInfo`] |
 //! | GET | `/v1/peers` | → [`PeersResponse`] |
 //! | POST | `/v1/peers` | [`PeerInfo`] → [`PeerInfo`] |
+//! | PATCH | `/v1/peers/{node_id}` | [`ReputationUpdate`] → [`PeerInfo`] |
 //! | POST | `/v1/agents/{did}` | [`RegisterRequest`] → [`AgentProfile`] |
 //! | GET | `/v1/agents/{did}` | → [`AgentProfile`] |
 //! | GET | `/v1/agents/{did}/inbox` | → [`InboxResponse`] |
@@ -35,6 +36,6 @@ pub use agent::{AgentProfile, InboxResponse, RegisterRequest};
 pub use error::ErrorResponse;
 pub use follow::{FollowEntry, FollowListResponse, FollowRequest};
 pub use node::{Capability, NodeInfo, PowParams};
-pub use peer::{PeerInfo, PeersResponse};
+pub use peer::{PeerInfo, PeersResponse, ReputationUpdate};
 pub use unit::{ListQuery, ListResponse, SubgraphQuery, SubgraphResponse, SubmitResponse};
 pub use semanticweft::Proof;

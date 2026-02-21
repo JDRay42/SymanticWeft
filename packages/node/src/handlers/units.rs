@@ -553,12 +553,21 @@ pub async fn list(
     Query(params): Query<UnitQueryParams>,
     auth: OptionalAuth,
 ) -> Result<Json<ListResponse>, AppError> {
-    let visibilities = if auth.0.is_some() {
-        vec![Visibility::Public, Visibility::Network]
+    let (visibilities, network_for_authors) = if let Some(ref caller_did) = auth.0 {
+        // Authenticated callers may see network units, but only from authors
+        // they follow. Fetch the follow list and pass it to the filter.
+        let following = state.storage.list_following(caller_did).await?;
+        if following.is_empty() {
+            (vec![Visibility::Public], vec![])
+        } else {
+            (vec![Visibility::Public, Visibility::Network], following)
+        }
     } else {
-        vec![Visibility::Public]
+        (vec![Visibility::Public], vec![])
     };
-    let filter = build_filter(params, visibilities);
+
+    let mut filter = build_filter(params, visibilities);
+    filter.network_for_authors = network_for_authors;
     let (units, has_more) = state.storage.list_units(&filter).await?;
     Ok(Json(ListResponse::from_page(units, has_more)))
 }
@@ -746,6 +755,7 @@ fn build_filter(params: UnitQueryParams, visibilities: Vec<Visibility>) -> UnitF
         after: params.after,
         limit,
         visibilities,
+        network_for_authors: vec![],
     }
 }
 

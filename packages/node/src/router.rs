@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
     Router,
 };
 use ed25519_dalek::SigningKey;
@@ -58,6 +58,7 @@ pub fn build_router(
         .route("/v1/sync", get(units::sync))
         // Peers
         .route("/v1/peers", get(peers::list).post(peers::add))
+        .route("/v1/peers/{node_id}", patch(peers::update_reputation))
         // Agents
         .route(
             "/v1/agents/{did}",
