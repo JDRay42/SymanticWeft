@@ -7,6 +7,7 @@
 //! - **`validate`** — check a unit or array of units against the spec.
 //! - **`render`** — print a human-readable summary of a unit or graph.
 //! - **`new`** — create a new unit with an auto-generated id and timestamp.
+//! - **`keygen`** — generate an Ed25519 identity key pair.
 //!
 //! **Network (requires `--node` or `SWEFT_NODE`):**
 //! - **`register`** — register an agent profile on a node.
@@ -14,6 +15,8 @@
 //! - **`fetch`** — retrieve a unit or list of units from a node.
 //!
 //! All local subcommands read JSON from a file path or from stdin (`-`).
+//! Network subcommands authenticate with Ed25519 HTTP Signatures; use
+//! `sweft keygen` to create your identity key before first use.
 
 use std::fs;
 use std::io::{self, Read};
@@ -21,6 +24,8 @@ use std::path::PathBuf;
 use std::process;
 
 use clap::{Parser, Subcommand};
+use ed25519_dalek::{Signer, SigningKey};
+use rand::rngs::OsRng;
 use semanticweft::{validate_unit, Graph, Reference, RelType, SemanticUnit, Source, UnitType};
 
 /// sweft — SemanticWeft protocol CLI
@@ -100,26 +105,41 @@ enum Command {
         references: Vec<String>,
     },
 
+    /// Generate an Ed25519 identity key pair.
+    ///
+    /// Creates a new signing key and saves the 32-byte seed (hex-encoded) to a
+    /// key file. The corresponding did:key DID and public key multibase are
+    /// printed to stdout so you can share them when registering on a node.
+    ///
+    /// The default key file path is ~/.config/sweft/identity.key. Pass --out
+    /// to save elsewhere (e.g. for multiple identities).
+    ///
+    /// Examples:
+    ///   sweft keygen
+    ///   sweft keygen --out ~/.config/sweft/work.key
+    Keygen {
+        /// Where to write the key file (default: ~/.config/sweft/identity.key).
+        /// Can also be set via the SWEFT_KEY environment variable.
+        #[arg(long, env = "SWEFT_KEY", value_name = "PATH")]
+        out: Option<PathBuf>,
+    },
+
     /// Register an agent profile on a SemanticWeft node.
     ///
-    /// Sends POST /v1/agents/{did} with the provided profile fields.
-    /// Authentication is required: supply a Bearer token via --token or
-    /// the SWEFT_TOKEN environment variable.
+    /// Authenticates via Ed25519 HTTP Signature using the key at --key (or
+    /// ~/.config/sweft/identity.key). The DID and public key are derived
+    /// automatically from the key file. Run `sweft keygen` first.
     ///
     /// Examples:
     ///   sweft register --node https://node.example.com \
-    ///     --did did:key:z6Mk... \
-    ///     --inbox-url https://node.example.com/v1/agents/did:key:z6Mk.../inbox \
-    ///     --token <jwt>
+    ///     --inbox-url https://node.example.com/v1/agents/did:key:z6Mk.../inbox
+    ///   sweft register --node https://node.example.com \
+    ///     --inbox-url https://... --key ~/.config/sweft/work.key
     Register {
         /// Base URL of the node (e.g. https://node.example.com).
         /// Can also be set via the SWEFT_NODE environment variable.
         #[arg(long, env = "SWEFT_NODE", value_name = "URL")]
         node: String,
-
-        /// The DID to register.
-        #[arg(long, value_name = "DID")]
-        did: String,
 
         /// The inbox URL for this agent.
         #[arg(long, value_name = "URL")]
@@ -129,20 +149,18 @@ enum Command {
         #[arg(long, value_name = "NAME")]
         display_name: Option<String>,
 
-        /// Optional Ed25519 public key (multibase-encoded).
-        #[arg(long, value_name = "KEY")]
-        public_key: Option<String>,
-
-        /// Bearer token for authentication (DID auth).
-        /// Can also be set via the SWEFT_TOKEN environment variable.
-        #[arg(long, env = "SWEFT_TOKEN", value_name = "TOKEN")]
-        token: String,
+        /// Path to the Ed25519 key file (default: ~/.config/sweft/identity.key).
+        /// Can also be set via the SWEFT_KEY environment variable.
+        #[arg(long, env = "SWEFT_KEY", value_name = "PATH")]
+        key: Option<PathBuf>,
     },
 
     /// Submit a Semantic Unit to a node.
     ///
     /// Reads a unit from a JSON file (or stdin with `-`) and sends it to the
-    /// node via POST /v1/units. For non-public units, provide an auth token.
+    /// node via POST /v1/units. Public units need no authentication. For
+    /// network or limited visibility units, provide --key so the request can
+    /// be signed with an HTTP Signature.
     ///
     /// Examples:
     ///   sweft submit --node https://node.example.com unit.json
@@ -157,16 +175,17 @@ enum Command {
         /// Path to a JSON file containing the unit, or `-` for stdin.
         file: PathBuf,
 
-        /// Bearer token for authentication (required for non-public units).
-        /// Can also be set via the SWEFT_TOKEN environment variable.
-        #[arg(long, env = "SWEFT_TOKEN", value_name = "TOKEN")]
-        token: Option<String>,
+        /// Path to the Ed25519 key file (required for non-public units).
+        /// Can also be set via the SWEFT_KEY environment variable.
+        #[arg(long, env = "SWEFT_KEY", value_name = "PATH")]
+        key: Option<PathBuf>,
     },
 
     /// Fetch a unit or a list of units from a node.
     ///
     /// With an ID, retrieves that specific unit (GET /v1/units/{id}).
     /// Without an ID, lists units with optional filters (GET /v1/units).
+    /// Provide --key to authenticate and receive network-visibility units.
     ///
     /// Examples:
     ///   sweft fetch --node https://node.example.com <uuid>
@@ -181,10 +200,10 @@ enum Command {
         /// Unit ID to fetch. If omitted, lists units with optional filters.
         id: Option<String>,
 
-        /// Bearer token for authentication (grants access to network units).
-        /// Can also be set via the SWEFT_TOKEN environment variable.
-        #[arg(long, env = "SWEFT_TOKEN", value_name = "TOKEN")]
-        token: Option<String>,
+        /// Path to the Ed25519 key file (enables network-unit access).
+        /// Can also be set via the SWEFT_KEY environment variable.
+        #[arg(long, env = "SWEFT_KEY", value_name = "PATH")]
+        key: Option<PathBuf>,
 
         /// Comma-separated unit types to include (e.g. assertion,inference).
         #[arg(long = "type", value_name = "TYPES")]
@@ -300,30 +319,68 @@ fn main() {
             println!("{}", serde_json::to_string_pretty(&unit).unwrap());
         }
 
+        Command::Keygen { out } => {
+            let path = out.unwrap_or_else(default_key_path);
+
+            // Create parent directories if needed.
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap_or_else(|e| {
+                    fatal(&format!("failed to create {}: {e}", parent.display()))
+                });
+            }
+
+            let signing_key = SigningKey::generate(&mut OsRng);
+            let hex = hex_encode(&signing_key.to_bytes());
+
+            fs::write(&path, &hex).unwrap_or_else(|e| {
+                fatal(&format!("failed to write key file {}: {e}", path.display()))
+            });
+
+            // Set restrictive permissions on Unix so the private key is not
+            // world-readable.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                    .unwrap_or_else(|e| {
+                        eprintln!("sweft: warning: could not set key file permissions: {e}")
+                    });
+            }
+
+            let (did, pubkey_multibase) = derive_did_and_pubkey(&signing_key);
+            println!("Key file : {}", path.display());
+            println!("DID      : {did}");
+            println!("Public key: {pubkey_multibase}");
+        }
+
         Command::Register {
             node,
-            did,
             inbox_url,
             display_name,
-            public_key,
-            token,
+            key,
         } => {
-            let url = format!("{}/v1/agents/{}", node.trim_end_matches('/'), urlencoded(&did));
+            let signing_key = load_key(key);
+            let (did, pubkey_multibase) = derive_did_and_pubkey(&signing_key);
+
+            let node = node.trim_end_matches('/');
+            let path = format!("/v1/agents/{}", urlencoded(&did));
+            let host = extract_host(node);
+            let (date, sig) = http_sign(&signing_key, &did, "post", &path, &host);
+
             let body = serde_json::json!({
                 "did": did,
                 "inbox_url": inbox_url,
                 "display_name": display_name,
-                "public_key": public_key,
+                "public_key": pubkey_multibase,
             });
 
             let client = reqwest::blocking::Client::new();
-            let mut req = client
-                .post(&url)
-                .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {token}"))
-                .json(&body);
-
-            let resp = req
+            let resp = client
+                .post(format!("{node}{path}"))
+                .header("host", &host)
+                .header("date", &date)
+                .header("signature", &sig)
+                .json(&body)
                 .send()
                 .unwrap_or_else(|e| fatal(&format!("request failed: {e}")));
 
@@ -339,7 +396,7 @@ fn main() {
             }
         }
 
-        Command::Submit { node, file, token } => {
+        Command::Submit { node, file, key } => {
             let json = read_input(&file);
             // Validate locally before sending.
             let unit = match serde_json::from_str::<SemanticUnit>(&json) {
@@ -350,15 +407,20 @@ fn main() {
                 fatal(&format!("unit is invalid: {e}"));
             }
 
-            let url = format!("{}/v1/units", node.trim_end_matches('/'));
+            let node = node.trim_end_matches('/');
+            let path = "/v1/units";
+            let host = extract_host(node);
+
             let client = reqwest::blocking::Client::new();
             let mut builder = client
-                .post(&url)
-                .header("content-type", "application/json")
+                .post(format!("{node}{path}"))
+                .header("host", &host)
                 .json(&unit);
 
-            if let Some(tok) = token {
-                builder = builder.header("authorization", format!("Bearer {tok}"));
+            if let Some(signing_key) = key.map(|p| load_key(Some(p))) {
+                let (did, _) = derive_did_and_pubkey(&signing_key);
+                let (date, sig) = http_sign(&signing_key, &did, "post", path, &host);
+                builder = builder.header("date", &date).header("signature", &sig);
             }
 
             let resp = builder
@@ -380,18 +442,18 @@ fn main() {
         Command::Fetch {
             node,
             id,
-            token,
+            key,
             unit_type,
             author,
             since,
             after,
             limit,
         } => {
-            let client = reqwest::blocking::Client::new();
             let node = node.trim_end_matches('/');
+            let host = extract_host(node);
 
-            let url = if let Some(ref uid) = id {
-                format!("{}/v1/units/{}", node, urlencoded(uid))
+            let path = if let Some(ref uid) = id {
+                format!("/v1/units/{}", urlencoded(uid))
             } else {
                 let mut params: Vec<(&str, String)> = Vec::new();
                 if let Some(ref t) = unit_type {
@@ -423,12 +485,16 @@ fn main() {
                     })
                     .collect();
 
-                format!("{}/v1/units{}", node, qs)
+                format!("/v1/units{qs}")
             };
 
-            let mut builder = client.get(&url);
-            if let Some(tok) = token {
-                builder = builder.header("authorization", format!("Bearer {tok}"));
+            let client = reqwest::blocking::Client::new();
+            let mut builder = client.get(format!("{node}{path}")).header("host", &host);
+
+            if let Some(signing_key) = key.map(|p| load_key(Some(p))) {
+                let (did, _) = derive_did_and_pubkey(&signing_key);
+                let (date, sig) = http_sign(&signing_key, &did, "get", &path, &host);
+                builder = builder.header("date", &date).header("signature", &sig);
             }
 
             let resp = builder
@@ -449,6 +515,73 @@ fn main() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Key management helpers
+// ---------------------------------------------------------------------------
+
+/// Return the default key file path: `~/.config/sweft/identity.key`.
+fn default_key_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".config").join("sweft").join("identity.key")
+}
+
+/// Load an Ed25519 signing key from a hex-encoded seed file.
+///
+/// The file must contain exactly 64 hex characters (32-byte seed).
+/// Exits with a helpful error if the file is missing or malformed.
+fn load_key(path: Option<PathBuf>) -> SigningKey {
+    let p = path.unwrap_or_else(default_key_path);
+    let hex = fs::read_to_string(&p).unwrap_or_else(|e| {
+        fatal(&format!(
+            "failed to read key file {}: {e}\nRun `sweft keygen` to create one.",
+            p.display()
+        ))
+    });
+    let seed = hex_decode(hex.trim())
+        .unwrap_or_else(|e| fatal(&format!("invalid key file {}: {e}", p.display())));
+    let arr: [u8; 32] = seed
+        .try_into()
+        .unwrap_or_else(|_| fatal("key file must contain a 32-byte hex seed (64 hex chars)"));
+    SigningKey::from_bytes(&arr)
+}
+
+/// Derive the `did:key` DID and public key multibase from a signing key.
+fn derive_did_and_pubkey(key: &SigningKey) -> (String, String) {
+    let pub_bytes = key.verifying_key().to_bytes();
+    let mut multicodec = vec![0xed_u8, 0x01];
+    multicodec.extend_from_slice(&pub_bytes);
+    let encoded = bs58::encode(&multicodec).into_string();
+    (format!("did:key:z{encoded}"), format!("z{encoded}"))
+}
+
+/// Build `Date` and `Signature` HTTP header values for an outbound request.
+///
+/// Mirrors `build_outbound_signature` in the node's auth middleware so that
+/// the CLI and node agree on the signing string format.
+fn http_sign(key: &SigningKey, did: &str, method: &str, path: &str, host: &str) -> (String, String) {
+    let date = httpdate::fmt_http_date(std::time::SystemTime::now());
+    let signing_string =
+        format!("(request-target): {method} {path}\nhost: {host}\ndate: {date}");
+    let sig_bytes = key.sign(signing_string.as_bytes()).to_bytes();
+    let sig_encoded = format!("z{}", bs58::encode(sig_bytes).into_string());
+    let sig_header = format!(
+        r#"keyId="{did}",algorithm="ed25519",headers="(request-target) host date",signature="{sig_encoded}""#
+    );
+    (date, sig_header)
+}
+
+/// Extract the `host` component (no scheme, no path) from a node base URL.
+fn extract_host(node_url: &str) -> String {
+    let stripped = node_url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    stripped.split('/').next().unwrap_or(stripped).to_string()
+}
+
+// ---------------------------------------------------------------------------
+// General helpers
+// ---------------------------------------------------------------------------
+
 /// Percent-encode a string for safe inclusion in a URL path or query string.
 fn urlencoded(s: &str) -> String {
     // Encode characters outside the unreserved set (RFC 3986 §2.3).
@@ -464,6 +597,22 @@ fn urlencoded(s: &str) -> String {
         }
     }
     out
+}
+
+/// Hex-encode a byte slice as a lowercase string.
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Decode a lowercase hex string into bytes.
+fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
+    if s.len() % 2 != 0 {
+        return Err("odd-length hex string".into());
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| e.to_string()))
+        .collect()
 }
 
 /// Read the full contents of a file, or stdin when the path is `"-"`.
