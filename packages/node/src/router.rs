@@ -9,19 +9,24 @@ use axum::{
 };
 use ed25519_dalek::SigningKey;
 
+use semanticweft::SemanticUnit;
+
 use crate::{
     config::NodeConfig,
-    handlers::{agents, follows, node, peers, units, webfinger, AppState},
+    handlers::{agents, follows, node, peers, units, webfinger, AppState, SSE_CHANNEL_CAPACITY},
     middleware::rate_limit::{rate_limit_middleware, RateLimiter},
     storage::Storage,
 };
 
 /// Build the complete application router with shared state.
+///
+/// Returns both the router and the SSE broadcast sender so the caller can
+/// wire it into any other component that needs to publish live unit events.
 pub fn build_router(
     storage: Arc<dyn Storage>,
     config: NodeConfig,
     signing_key: Arc<SigningKey>,
-) -> Router {
+) -> (Router, Arc<tokio::sync::broadcast::Sender<Arc<SemanticUnit>>>) {
     let http_client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -30,14 +35,18 @@ pub fn build_router(
     // Build the per-IP rate limiter from config (0 = disabled).
     let rate_limiter = Arc::new(RateLimiter::new(config.rate_limit_per_minute));
 
+    let (sse_tx, _) = tokio::sync::broadcast::channel(SSE_CHANNEL_CAPACITY);
+    let sse_tx = Arc::new(sse_tx);
+
     let state = AppState {
         storage,
         config,
         http_client,
         signing_key,
+        sse_tx: Arc::clone(&sse_tx),
     };
 
-    Router::new()
+    let router = Router::new()
         // Node discovery and WebFinger (RFC 7033) agent resolution
         .route("/.well-known/semanticweft", get(node::well_known))
         .route("/.well-known/webfinger", get(webfinger::webfinger))
@@ -52,7 +61,7 @@ pub fn build_router(
         // Agents
         .route(
             "/v1/agents/{did}",
-            post(agents::register).get(agents::get_agent),
+            post(agents::register).get(agents::get_agent).delete(agents::delete_agent),
         )
         .route(
             "/v1/agents/{did}/inbox",
@@ -72,5 +81,7 @@ pub fn build_router(
         // Rate limiting layer applied after routing so it can see the full request.
         .layer(axum::middleware::from_fn(move |req, next| {
             rate_limit_middleware(Arc::clone(&rate_limiter), req, next)
-        }))
+        }));
+
+    (router, sse_tx)
 }

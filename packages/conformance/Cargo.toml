@@ -1,0 +1,27 @@
+[package]
+name = "semanticweft-conformance"
+version = "0.1.0"
+edition = "2021"
+description = "End-to-end conformance test suite for the SemanticWeft node API."
+license = "MIT"
+publish = false
+
+[lib]
+name = "semanticweft_conformance"
+path = "src/lib.rs"
+
+[dependencies]
+semanticweft = { path = "../core" }
+semanticweft-node-api = { path = "../node-api" }
+semanticweft-node = { path = "../node" }
+
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde_json = "1"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+bs58 = "0.5"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

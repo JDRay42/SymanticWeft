@@ -9,6 +9,10 @@ license = "MIT"
 name = "sweft-node"
 path = "src/main.rs"
 
+[lib]
+name = "semanticweft_node"
+path = "src/lib.rs"
+
 [dependencies]
 semanticweft = { path = "../core" }
 semanticweft-node-api = { path = "../node-api" }
@@ -35,10 +39,13 @@ hex = "0.4"
 
 urlencoding = "2"
 
+tokio-stream = { version = "0.1", features = ["sync"] }
+
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+bytes = "1"
 rand = "0.8"

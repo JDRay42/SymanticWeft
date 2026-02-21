@@ -535,6 +535,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07bbe89c50d7a535e539b8c17bc0b49bdb77747034daa8087407d655f3f7cc1d"
 dependencies = [
  "futures-core",
+ "futures-sink",
 ]
 
 [[package]]
@@ -542,6 +543,12 @@ name = "futures-core"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e3450815272ef58cec6d564423f6e755e25379b217b0bc688e295ba24df6b1d"
+
+[[package]]
+name = "futures-io"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cecba35d7ad927e23624b22ad55235f2239cfa44fd10428eecbeba6d6a717718"
 
 [[package]]
 name = "futures-sink"
@@ -562,7 +569,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "389ca41296e6190b48053de0321d02a77f32f8a5d2461dd38762c0593805c6d6"
 dependencies = [
  "futures-core",
+ "futures-io",
+ "futures-sink",
  "futures-task",
+ "memchr",
  "pin-project-lite",
  "slab",
 ]
@@ -1368,7 +1378,9 @@ dependencies = [
  "base64",
  "bytes",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
+ "futures-util",
  "h2",
  "http",
  "http-body",
@@ -1577,12 +1589,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "semanticweft-conformance"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bs58",
+ "ed25519-dalek",
+ "rand",
+ "reqwest",
+ "semanticweft",
+ "semanticweft-node",
+ "semanticweft-node-api",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "semanticweft-node"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
  "bs58",
+ "bytes",
  "chrono",
  "ed25519-dalek",
  "hex",
@@ -1598,6 +1627,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-stream",
  "tower",
  "tower-http",
  "tracing",
@@ -1812,7 +1842,9 @@ name = "sweft"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "reqwest",
  "semanticweft",
+ "serde",
  "serde_json",
 ]
 
@@ -2001,6 +2033,18 @@ checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
  "rustls",
  "tokio",
+]
+
+[[package]]
+name = "tokio-stream"
+version = "0.1.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32da49809aab5c3bc678af03902d4ccddea2a87d028d86392a4b1560c6906c70"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

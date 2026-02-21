@@ -15,7 +15,12 @@ pub mod webfinger;
 
 use std::sync::Arc;
 
+use semanticweft::SemanticUnit;
+
 use crate::{config::NodeConfig, storage::Storage};
+
+/// Broadcast channel capacity for live SSE unit streaming.
+pub const SSE_CHANNEL_CAPACITY: usize = 256;
 
 /// Shared application state threaded through all Axum handlers via [`axum::extract::State`].
 #[derive(Clone)]
@@ -27,4 +32,10 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     /// The node's Ed25519 signing key, used to authenticate outbound S2S requests.
     pub signing_key: Arc<ed25519_dalek::SigningKey>,
+    /// Broadcast channel for pushing newly submitted public units to live SSE subscribers.
+    ///
+    /// The channel is bounded by [`SSE_CHANNEL_CAPACITY`]. Slow consumers may
+    /// receive a `RecvError::Lagged` error, which the SSE handler treats as a
+    /// prompt to re-sync from the cursor rather than dropping the connection.
+    pub sse_tx: Arc<tokio::sync::broadcast::Sender<Arc<SemanticUnit>>>,
 }

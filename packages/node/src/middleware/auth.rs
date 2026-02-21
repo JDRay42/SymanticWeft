@@ -541,7 +541,7 @@ mod tests {
         };
         // Use a dummy signing key for tests
         let node_signing_key = Arc::new(SigningKey::generate(&mut OsRng));
-        let app = build_router(Arc::clone(&storage), config, node_signing_key);
+        let (app, _) = build_router(Arc::clone(&storage), config, node_signing_key);
         (app, storage)
     }
 

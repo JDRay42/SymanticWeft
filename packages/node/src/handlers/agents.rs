@@ -120,6 +120,35 @@ pub async fn inbox(
     Ok(Json(InboxResponse { items, next_cursor }))
 }
 
+/// `DELETE /v1/agents/{did}` — deregister an agent from this node.
+///
+/// Removes the agent profile and purges their inbox. Only the agent itself
+/// (authenticated via the same DID) may delete their own registration.
+/// Returns 204 No Content on success, 404 if the DID is not registered,
+/// 401 if unauthenticated, or 403 if the caller's DID does not match the
+/// path DID.
+pub async fn delete_agent(
+    State(state): State<AppState>,
+    Path(did): Path<String>,
+    auth: RequireAuth,
+) -> Result<impl IntoResponse, AppError> {
+    if auth.did != did {
+        return Err(AppError::Forbidden(
+            "cannot deregister a different agent".into(),
+        ));
+    }
+
+    // Return 404 if the agent is not registered.
+    state
+        .storage
+        .get_agent(&did)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("agent {did} not found")))?;
+
+    state.storage.delete_agent(&did).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `POST /v1/agents/{did}/inbox` — node-to-node push delivery (spec §8.6).
 ///
 /// Accepts a [`SemanticUnit`] from a remote node and delivers it to the
@@ -197,7 +226,7 @@ mod tests {
             rate_limit_per_minute: 0,
         };
         let signing_key = Arc::new(SigningKey::generate(&mut OsRng));
-        build_router(storage, config, signing_key)
+        build_router(storage, config, signing_key).0
     }
 
     fn make_unit(author: &str) -> SemanticUnit {

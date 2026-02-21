@@ -122,7 +122,7 @@ async fn main() {
         });
     }
 
-    let app = router::build_router(storage, config.clone(), std::sync::Arc::new(identity.signing_key().clone()));
+    let (app, _sse_tx) = router::build_router(storage, config.clone(), std::sync::Arc::new(identity.signing_key().clone()));
 
     tracing::info!("listening on {}", config.bind_addr);
     let listener = tokio::net::TcpListener::bind(config.bind_addr)

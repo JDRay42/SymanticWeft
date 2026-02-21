@@ -442,6 +442,22 @@ impl Storage for SqliteStorage {
         .map_err(|e| StorageError::Internal(format!("task join error: {e}")))?
     }
 
+    async fn delete_agent(&self, did: &str) -> Result<(), StorageError> {
+        let conn = Arc::clone(&self.conn);
+        let did = did.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            conn.execute("DELETE FROM agents WHERE did = ?1", params![did])
+                .map_err(map_err)?;
+            conn.execute("DELETE FROM inbox WHERE agent_did = ?1", params![did])
+                .map_err(map_err)?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("task join error: {e}")))?
+    }
+
     // --- Follows -------------------------------------------------------------
 
     async fn add_follow(&self, follower: &str, followee: &str) -> Result<(), StorageError> {
