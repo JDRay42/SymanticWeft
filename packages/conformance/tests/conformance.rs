@@ -36,6 +36,8 @@
 //! | `delete_agent_returns_204` | §8 DELETE agent |
 //! | `delete_unknown_agent_returns_404` | §8 DELETE agent |
 //! | `register_agent_wrong_did_returns_403` | §8 agents auth |
+//! | `delete_agent_unauthenticated_returns_401` | §8 DELETE agent auth |
+//! | `delete_agent_wrong_did_returns_403` | §8 DELETE agent auth |
 //! | `follow_and_list` | §9 follows |
 //! | `unfollow_removes_relationship` | §9 follows |
 
@@ -514,6 +516,69 @@ async fn delete_unknown_agent_returns_404() {
         resp.status() == 401 || resp.status() == 404,
         "deleting an unknown agent should return 401 or 404, got {}",
         resp.status()
+    );
+}
+
+#[tokio::test]
+async fn delete_agent_unauthenticated_returns_401() {
+    // A DELETE request with no auth headers must be rejected before reaching
+    // the handler — RequireAuth should return 401.
+    let (base, storage) = spawn_node().await;
+    let client = make_client();
+
+    let (_, did, pubkey) = make_agent_key();
+    let inbox_url = format!("{base}/v1/agents/{did}/inbox");
+    let path = format!("/v1/agents/{did}");
+
+    seed_agent(&storage, &did, &inbox_url, &pubkey).await;
+
+    // No Signature / Date headers.
+    let resp = client
+        .delete(format!("{base}{path}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401, "unauthenticated DELETE should return 401");
+
+    // The agent must still exist.
+    assert!(
+        storage.get_agent(&did).await.unwrap().is_some(),
+        "agent must not be deleted by an unauthenticated request"
+    );
+}
+
+#[tokio::test]
+async fn delete_agent_wrong_did_returns_403() {
+    // Agent A authenticates but tries to delete Agent B's registration.
+    // The handler checks `auth.did == path did` and must return 403.
+    let (base, storage) = spawn_node().await;
+    let client = make_client();
+    let addr = base.strip_prefix("http://").unwrap_or(&base);
+
+    let (key_a, did_a, pubkey_a) = make_agent_key();
+    let (_, did_b, pubkey_b) = make_agent_key();
+
+    seed_agent(&storage, &did_a, &format!("{base}/v1/agents/{did_a}/inbox"), &pubkey_a).await;
+    seed_agent(&storage, &did_b, &format!("{base}/v1/agents/{did_b}/inbox"), &pubkey_b).await;
+
+    // Agent A signs a DELETE for Agent B's path.
+    let path_b = format!("/v1/agents/{did_b}");
+    let (date, sig) = http_sig(&key_a, &did_a, "delete", &path_b, addr);
+
+    let resp = client
+        .delete(format!("{base}{path_b}"))
+        .header("host", addr)
+        .header("date", &date)
+        .header("signature", &sig)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403, "deleting another agent should return 403");
+
+    // Agent B must still exist.
+    assert!(
+        storage.get_agent(&did_b).await.unwrap().is_some(),
+        "agent B must not be deleted by agent A"
     );
 }
 

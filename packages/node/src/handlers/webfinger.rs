@@ -5,7 +5,7 @@
 //!
 //! # Request
 //!
-//! ```
+//! ```text
 //! GET /.well-known/webfinger?resource=acct:did:key:z6Mk…@example.com
 //! ```
 //!
