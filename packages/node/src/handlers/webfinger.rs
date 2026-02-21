@@ -5,7 +5,7 @@
 //!
 //! # Request
 //!
-//! ```
+//! ```text
 //! GET /.well-known/webfinger?resource=acct:did:key:z6Mk…@example.com
 //! ```
 //!
@@ -174,7 +174,7 @@ mod tests {
             rate_limit_per_minute: 0,
         };
         let signing_key = Arc::new(SigningKey::generate(&mut OsRng));
-        build_router(storage, config, signing_key)
+        build_router(storage, config, signing_key).0
     }
 
     #[tokio::test]

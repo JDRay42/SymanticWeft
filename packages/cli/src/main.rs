@@ -1,13 +1,19 @@
 //! `sweft` — SemanticWeft protocol command-line interface.
 //!
-//! Provides three subcommands for working with Semantic Units on the command
-//! line:
+//! Provides subcommands for working with Semantic Units locally and against a
+//! live node:
 //!
+//! **Local:**
 //! - **`validate`** — check a unit or array of units against the spec.
 //! - **`render`** — print a human-readable summary of a unit or graph.
 //! - **`new`** — create a new unit with an auto-generated id and timestamp.
 //!
-//! All subcommands read JSON from a file path or from stdin (`-`).
+//! **Network (requires `--node` or `SWEFT_NODE`):**
+//! - **`register`** — register an agent profile on a node.
+//! - **`submit`** — submit a unit to a node.
+//! - **`fetch`** — retrieve a unit or list of units from a node.
+//!
+//! All local subcommands read JSON from a file path or from stdin (`-`).
 
 use std::fs;
 use std::io::{self, Read};
@@ -92,6 +98,113 @@ enum Command {
         /// Repeat for multiple references: --ref <uuid>:<rel> --ref <uuid>:<rel>
         #[arg(long = "ref", value_name = "UUID:REL")]
         references: Vec<String>,
+    },
+
+    /// Register an agent profile on a SemanticWeft node.
+    ///
+    /// Sends POST /v1/agents/{did} with the provided profile fields.
+    /// Authentication is required: supply a Bearer token via --token or
+    /// the SWEFT_TOKEN environment variable.
+    ///
+    /// Examples:
+    ///   sweft register --node https://node.example.com \
+    ///     --did did:key:z6Mk... \
+    ///     --inbox-url https://node.example.com/v1/agents/did:key:z6Mk.../inbox \
+    ///     --token <jwt>
+    Register {
+        /// Base URL of the node (e.g. https://node.example.com).
+        /// Can also be set via the SWEFT_NODE environment variable.
+        #[arg(long, env = "SWEFT_NODE", value_name = "URL")]
+        node: String,
+
+        /// The DID to register.
+        #[arg(long, value_name = "DID")]
+        did: String,
+
+        /// The inbox URL for this agent.
+        #[arg(long, value_name = "URL")]
+        inbox_url: String,
+
+        /// Optional display name.
+        #[arg(long, value_name = "NAME")]
+        display_name: Option<String>,
+
+        /// Optional Ed25519 public key (multibase-encoded).
+        #[arg(long, value_name = "KEY")]
+        public_key: Option<String>,
+
+        /// Bearer token for authentication (DID auth).
+        /// Can also be set via the SWEFT_TOKEN environment variable.
+        #[arg(long, env = "SWEFT_TOKEN", value_name = "TOKEN")]
+        token: String,
+    },
+
+    /// Submit a Semantic Unit to a node.
+    ///
+    /// Reads a unit from a JSON file (or stdin with `-`) and sends it to the
+    /// node via POST /v1/units. For non-public units, provide an auth token.
+    ///
+    /// Examples:
+    ///   sweft submit --node https://node.example.com unit.json
+    ///   sweft new -t assertion -c "test" -a did:key:z6Mk... | \
+    ///     sweft submit --node https://node.example.com -
+    Submit {
+        /// Base URL of the node (e.g. https://node.example.com).
+        /// Can also be set via the SWEFT_NODE environment variable.
+        #[arg(long, env = "SWEFT_NODE", value_name = "URL")]
+        node: String,
+
+        /// Path to a JSON file containing the unit, or `-` for stdin.
+        file: PathBuf,
+
+        /// Bearer token for authentication (required for non-public units).
+        /// Can also be set via the SWEFT_TOKEN environment variable.
+        #[arg(long, env = "SWEFT_TOKEN", value_name = "TOKEN")]
+        token: Option<String>,
+    },
+
+    /// Fetch a unit or a list of units from a node.
+    ///
+    /// With an ID, retrieves that specific unit (GET /v1/units/{id}).
+    /// Without an ID, lists units with optional filters (GET /v1/units).
+    ///
+    /// Examples:
+    ///   sweft fetch --node https://node.example.com <uuid>
+    ///   sweft fetch --node https://node.example.com --author did:key:z6Mk...
+    ///   sweft fetch --node https://node.example.com --type assertion --limit 10
+    Fetch {
+        /// Base URL of the node (e.g. https://node.example.com).
+        /// Can also be set via the SWEFT_NODE environment variable.
+        #[arg(long, env = "SWEFT_NODE", value_name = "URL")]
+        node: String,
+
+        /// Unit ID to fetch. If omitted, lists units with optional filters.
+        id: Option<String>,
+
+        /// Bearer token for authentication (grants access to network units).
+        /// Can also be set via the SWEFT_TOKEN environment variable.
+        #[arg(long, env = "SWEFT_TOKEN", value_name = "TOKEN")]
+        token: Option<String>,
+
+        /// Comma-separated unit types to include (e.g. assertion,inference).
+        #[arg(long = "type", value_name = "TYPES")]
+        unit_type: Option<String>,
+
+        /// Filter by author DID.
+        #[arg(long, value_name = "DID")]
+        author: Option<String>,
+
+        /// ISO 8601 lower bound on created_at (e.g. 2026-01-01T00:00:00Z).
+        #[arg(long, value_name = "ISO8601")]
+        since: Option<String>,
+
+        /// Keyset cursor (unit id of the last seen item).
+        #[arg(long, value_name = "UUID")]
+        after: Option<String>,
+
+        /// Maximum number of units to return (1–500, default 50).
+        #[arg(long, value_name = "N")]
+        limit: Option<u32>,
     },
 }
 
@@ -186,7 +299,171 @@ fn main() {
 
             println!("{}", serde_json::to_string_pretty(&unit).unwrap());
         }
+
+        Command::Register {
+            node,
+            did,
+            inbox_url,
+            display_name,
+            public_key,
+            token,
+        } => {
+            let url = format!("{}/v1/agents/{}", node.trim_end_matches('/'), urlencoded(&did));
+            let body = serde_json::json!({
+                "did": did,
+                "inbox_url": inbox_url,
+                "display_name": display_name,
+                "public_key": public_key,
+            });
+
+            let client = reqwest::blocking::Client::new();
+            let mut req = client
+                .post(&url)
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .json(&body);
+
+            let resp = req
+                .send()
+                .unwrap_or_else(|e| fatal(&format!("request failed: {e}")));
+
+            let status = resp.status();
+            let text = resp.text().unwrap_or_default();
+
+            if status.is_success() {
+                println!("{text}");
+            } else {
+                eprintln!("sweft: server returned {status}");
+                eprintln!("{text}");
+                process::exit(1);
+            }
+        }
+
+        Command::Submit { node, file, token } => {
+            let json = read_input(&file);
+            // Validate locally before sending.
+            let unit = match serde_json::from_str::<SemanticUnit>(&json) {
+                Ok(u) => u,
+                Err(e) => fatal(&format!("failed to parse unit: {e}")),
+            };
+            if let Err(e) = validate_unit(&unit) {
+                fatal(&format!("unit is invalid: {e}"));
+            }
+
+            let url = format!("{}/v1/units", node.trim_end_matches('/'));
+            let client = reqwest::blocking::Client::new();
+            let mut builder = client
+                .post(&url)
+                .header("content-type", "application/json")
+                .json(&unit);
+
+            if let Some(tok) = token {
+                builder = builder.header("authorization", format!("Bearer {tok}"));
+            }
+
+            let resp = builder
+                .send()
+                .unwrap_or_else(|e| fatal(&format!("request failed: {e}")));
+
+            let status = resp.status();
+            let text = resp.text().unwrap_or_default();
+
+            if status.is_success() {
+                println!("{text}");
+            } else {
+                eprintln!("sweft: server returned {status}");
+                eprintln!("{text}");
+                process::exit(1);
+            }
+        }
+
+        Command::Fetch {
+            node,
+            id,
+            token,
+            unit_type,
+            author,
+            since,
+            after,
+            limit,
+        } => {
+            let client = reqwest::blocking::Client::new();
+            let node = node.trim_end_matches('/');
+
+            let url = if let Some(ref uid) = id {
+                format!("{}/v1/units/{}", node, urlencoded(uid))
+            } else {
+                let mut params: Vec<(&str, String)> = Vec::new();
+                if let Some(ref t) = unit_type {
+                    params.push(("type", t.clone()));
+                }
+                if let Some(ref a) = author {
+                    params.push(("author", a.clone()));
+                }
+                if let Some(ref s) = since {
+                    params.push(("since", s.clone()));
+                }
+                if let Some(ref c) = after {
+                    params.push(("after", c.clone()));
+                }
+                if let Some(l) = limit {
+                    params.push(("limit", l.to_string()));
+                }
+
+                let qs: String = params
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (k, v))| {
+                        format!(
+                            "{}{}={}",
+                            if i == 0 { "?" } else { "&" },
+                            k,
+                            urlencoded(v)
+                        )
+                    })
+                    .collect();
+
+                format!("{}/v1/units{}", node, qs)
+            };
+
+            let mut builder = client.get(&url);
+            if let Some(tok) = token {
+                builder = builder.header("authorization", format!("Bearer {tok}"));
+            }
+
+            let resp = builder
+                .send()
+                .unwrap_or_else(|e| fatal(&format!("request failed: {e}")));
+
+            let status = resp.status();
+            let text = resp.text().unwrap_or_default();
+
+            if status.is_success() {
+                println!("{text}");
+            } else {
+                eprintln!("sweft: server returned {status}");
+                eprintln!("{text}");
+                process::exit(1);
+            }
+        }
     }
+}
+
+/// Percent-encode a string for safe inclusion in a URL path or query string.
+fn urlencoded(s: &str) -> String {
+    // Encode characters outside the unreserved set (RFC 3986 §2.3).
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        }
+    }
+    out
 }
 
 /// Read the full contents of a file, or stdin when the path is `"-"`.

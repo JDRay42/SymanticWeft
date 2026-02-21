@@ -120,6 +120,35 @@ pub async fn inbox(
     Ok(Json(InboxResponse { items, next_cursor }))
 }
 
+/// `DELETE /v1/agents/{did}` — deregister an agent from this node.
+///
+/// Removes the agent profile and purges their inbox. Only the agent itself
+/// (authenticated via the same DID) may delete their own registration.
+/// Returns 204 No Content on success, 404 if the DID is not registered,
+/// 401 if unauthenticated, or 403 if the caller's DID does not match the
+/// path DID.
+pub async fn delete_agent(
+    State(state): State<AppState>,
+    Path(did): Path<String>,
+    auth: RequireAuth,
+) -> Result<impl IntoResponse, AppError> {
+    if auth.did != did {
+        return Err(AppError::Forbidden(
+            "cannot deregister a different agent".into(),
+        ));
+    }
+
+    // Return 404 if the agent is not registered.
+    state
+        .storage
+        .get_agent(&did)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("agent {did} not found")))?;
+
+    state.storage.delete_agent(&did).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `POST /v1/agents/{did}/inbox` — node-to-node push delivery (spec §8.6).
 ///
 /// Accepts a [`SemanticUnit`] from a remote node and delivers it to the
@@ -197,7 +226,7 @@ mod tests {
             rate_limit_per_minute: 0,
         };
         let signing_key = Arc::new(SigningKey::generate(&mut OsRng));
-        build_router(storage, config, signing_key)
+        build_router(storage, config, signing_key).0
     }
 
     fn make_unit(author: &str) -> SemanticUnit {
@@ -287,5 +316,152 @@ mod tests {
 
         let resp = build_app(storage).oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // -----------------------------------------------------------------------
+    // DELETE /v1/agents/{did}
+    // -----------------------------------------------------------------------
+
+    /// Helper: register an agent profile directly in storage with a known key.
+    async fn seed_agent_with_key(
+        storage: &Arc<dyn Storage>,
+        signing_key: &SigningKey,
+    ) -> (String, String) {
+        let pub_bytes = signing_key.verifying_key().to_bytes();
+        let mut multicodec = vec![0xed_u8, 0x01];
+        multicodec.extend_from_slice(&pub_bytes);
+        let did = format!("did:key:z{}", bs58::encode(&multicodec).into_string());
+        let pubkey_multibase = format!("z{}", bs58::encode(&multicodec).into_string());
+        storage
+            .put_agent(&AgentProfile {
+                did: did.clone(),
+                inbox_url: format!("http://localhost/v1/agents/{did}/inbox"),
+                display_name: None,
+                public_key: Some(pubkey_multibase.clone()),
+            })
+            .await
+            .unwrap();
+        (did, pubkey_multibase)
+    }
+
+    #[tokio::test]
+    async fn delete_own_agent_returns_204() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let (key, did) = make_node_key_and_did();
+        seed_agent_with_key(&storage, &key).await;
+
+        let path = format!("/v1/agents/{did}");
+        let (date, sig) = build_outbound_signature(&key, &did, "delete", &path, "localhost");
+
+        let req = Request::builder()
+            .method("DELETE")
+            .uri(&path)
+            .header("host", "localhost")
+            .header("date", &date)
+            .header("signature", &sig)
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = build_app(storage.clone()).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // Agent must be gone from storage.
+        assert!(storage.get_agent(&did).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_agent_unauthenticated_returns_401() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let (key, did) = make_node_key_and_did();
+        seed_agent_with_key(&storage, &key).await;
+
+        let path = format!("/v1/agents/{did}");
+
+        // No Signature or Date headers — RequireAuth must reject this.
+        let req = Request::builder()
+            .method("DELETE")
+            .uri(&path)
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = build_app(storage).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn delete_agent_wrong_did_returns_403() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+
+        // Register two independent agents.
+        let (key_a, did_a) = make_node_key_and_did();
+        let (_, did_b) = make_node_key_and_did();
+        seed_agent_with_key(&storage, &key_a).await;
+        // Register did_b with a dummy key so it exists in storage.
+        storage
+            .put_agent(&AgentProfile {
+                did: did_b.clone(),
+                inbox_url: format!("http://localhost/v1/agents/{did_b}/inbox"),
+                display_name: None,
+                public_key: None,
+            })
+            .await
+            .unwrap();
+
+        // Agent A tries to delete Agent B's registration — must be 403.
+        let path = format!("/v1/agents/{did_b}");
+        let (date, sig) = build_outbound_signature(&key_a, &did_a, "delete", &path, "localhost");
+
+        let req = Request::builder()
+            .method("DELETE")
+            .uri(&path)
+            .header("host", "localhost")
+            .header("date", &date)
+            .header("signature", &sig)
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = build_app(storage.clone()).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        // Agent B must still exist.
+        assert!(storage.get_agent(&did_b).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn delete_agent_twice_returns_401_on_second() {
+        // After a successful DELETE the agent's record (including their public key)
+        // is gone, so a second DELETE attempt fails auth with 401 — not 204 or 404.
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let (key, did) = make_node_key_and_did();
+        seed_agent_with_key(&storage, &key).await;
+
+        let path = format!("/v1/agents/{did}");
+
+        let signed_delete = |storage: Arc<dyn Storage>| {
+            let key = key.clone();
+            let did = did.clone();
+            let path = path.clone();
+            async move {
+                let (date, sig) =
+                    build_outbound_signature(&key, &did, "delete", &path, "localhost");
+                let req = Request::builder()
+                    .method("DELETE")
+                    .uri(&path)
+                    .header("host", "localhost")
+                    .header("date", &date)
+                    .header("signature", &sig)
+                    .body(Body::empty())
+                    .unwrap();
+                build_app(storage).oneshot(req).await.unwrap()
+            }
+        };
+
+        // First delete succeeds.
+        let resp = signed_delete(Arc::clone(&storage)).await;
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // Second delete: no key in storage → RequireAuth returns 401.
+        let resp = signed_delete(Arc::clone(&storage)).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }

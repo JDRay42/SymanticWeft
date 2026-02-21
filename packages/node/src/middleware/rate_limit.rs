@@ -214,7 +214,7 @@ mod tests {
             rate_limit_per_minute: 2, // very tight — easier to hit in tests
         };
         let signing_key = Arc::new(SigningKey::generate(&mut OsRng));
-        let app = build_router(storage, config, signing_key);
+        let (app, _) = build_router(storage, config, signing_key);
 
         // First two requests to the same "unknown" IP should succeed.
         for i in 1..=2 {

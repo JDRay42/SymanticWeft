@@ -181,6 +181,13 @@ impl Storage for MemoryStorage {
         Ok(inner.agents.get(did).cloned())
     }
 
+    async fn delete_agent(&self, did: &str) -> Result<(), StorageError> {
+        let mut inner = self.inner.write().unwrap();
+        inner.agents.remove(did);
+        inner.inbox.remove(did);
+        Ok(())
+    }
+
     // --- Follows -------------------------------------------------------------
 
     async fn add_follow(&self, follower: &str, followee: &str) -> Result<(), StorageError> {

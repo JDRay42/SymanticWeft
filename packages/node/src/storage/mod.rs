@@ -122,6 +122,9 @@ pub trait Storage: Send + Sync + 'static {
     /// Retrieve an agent profile by DID. Returns `None` if not registered.
     async fn get_agent(&self, did: &str) -> Result<Option<AgentProfile>, StorageError>;
 
+    /// Deregister an agent and purge their inbox. No-op if the DID is not registered.
+    async fn delete_agent(&self, did: &str) -> Result<(), StorageError>;
+
     // --- Follows -------------------------------------------------------------
 
     /// Record that `follower` follows `followee`. Idempotent.

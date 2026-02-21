@@ -20,13 +20,14 @@ use std::sync::Arc;
 use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::{sse::Event, sse::Sse, IntoResponse, Response},
     Json,
 };
 use serde::Deserialize;
 use semanticweft::{validate_unit, Graph, Reference, RelType, SemanticUnit, UnitType, Visibility};
 use semanticweft_agent_core::AgentAddress;
 use semanticweft_node_api::{ListResponse, SubgraphResponse};
+use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 
 use crate::{
     error::AppError,
@@ -105,18 +106,25 @@ pub async fn submit(
 
     state.storage.put_unit(&unit).await?;
 
+    // Broadcast public units to live SSE subscribers.
+    let unit_vis = unit.visibility.as_ref().unwrap_or(&Visibility::Public);
+    if *unit_vis == Visibility::Public {
+        let _ = state.sse_tx.send(Arc::new(unit.clone()));
+    }
+
     // Local and remote fan-out run together in a detached task so the HTTP
     // response is never blocked by delivery.
     let storage = Arc::clone(&state.storage);
     let client = state.http_client.clone();
     let node_did = state.config.node_id.clone();
+    let node_api_base = state.config.api_base.clone();
     let signing_key = Arc::clone(&state.signing_key);
     let unit_fanout = unit.clone();
     tokio::spawn(async move {
         if let Err(e) = local_fanout(Arc::clone(&storage), unit_fanout.clone()).await {
             tracing::warn!("local fan-out error: {e}");
         }
-        remote_fanout(client, unit_fanout, storage, node_did, signing_key).await;
+        remote_fanout(client, unit_fanout, storage, node_did, node_api_base, signing_key).await;
     });
 
     Ok((StatusCode::CREATED, Json(unit)))
@@ -172,24 +180,26 @@ async fn local_fanout(
     Ok(())
 }
 
-/// Push a `limited` unit to audience members whose home node is elsewhere.
+/// Push a non-public unit to eligible recipients on remote nodes.
 ///
-/// Remote entries are identified by the presence of `@` in the audience DID
-/// string (format: `did:key:z6Mk…@hostname`). Local entries (no `@`) are
-/// handled by [`local_fanout`] and are ignored here.
+/// Handles two visibility modes:
 ///
-/// For each unique remote hostname the node's `/.well-known/semanticweft`
-/// document is fetched once to discover `api_base`. Results are cached in a
-/// per-call `HashMap` so multiple recipients on the same node only trigger
-/// one discovery request. The unit is then `POST`-ed to each recipient's
-/// inbox URL.
+/// - **`network`**: the unit is pushed to each follower of the author who has
+///   an agent profile registered on this node with an `inbox_url` that does
+///   not originate from this node (i.e. their home node is elsewhere). Local
+///   followers are already handled by [`local_fanout`].
+///
+/// - **`limited`**: audience entries containing `@` (format
+///   `did:key:z6Mk…@hostname`) identify recipients on remote nodes. For each
+///   unique hostname the node's `/.well-known/semanticweft` document is
+///   fetched once to discover `api_base`; results are cached so multiple
+///   recipients on the same node only trigger one discovery request.
 ///
 /// **Delivery failure notifications**: when a push attempt fails (network
 /// error, 4xx, 5xx), this node generates a `constraint` unit and delivers it
 /// to the original author's local inbox — if the author is registered here.
 /// The notification carries `references: [{ id: <original-unit-id>, rel:
-/// "notifies" }]` as the association fingerprint so the author can correlate
-/// it to the unit that triggered it.
+/// "notifies" }]` so the author can correlate it to the triggering unit.
 ///
 /// All failures are handled per-recipient; a failure for one recipient never
 /// aborts delivery to others.
@@ -198,12 +208,53 @@ async fn remote_fanout(
     unit: SemanticUnit,
     storage: Arc<dyn Storage>,
     node_did: String,
+    node_api_base: String,
     signing_key: std::sync::Arc<ed25519_dalek::SigningKey>,
 ) {
-    // Only `limited` units use push delivery (ADR-0009).
     let vis = unit.visibility.clone().unwrap_or(Visibility::Public);
-    if vis != Visibility::Limited {
-        return;
+
+    match vis {
+        Visibility::Public => return,
+
+        Visibility::Network => {
+            // Push to followers whose registered inbox_url belongs to a different node.
+            let followers = match storage.list_followers(&unit.author).await {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::warn!("remote_fanout: failed to list followers: {e}");
+                    return;
+                }
+            };
+
+            for follower_did in &followers {
+                let profile = match storage.get_agent(follower_did).await {
+                    Ok(Some(p)) => p,
+                    Ok(None) => continue, // not registered here; can't reach them
+                    Err(e) => {
+                        tracing::warn!("remote_fanout: get_agent({follower_did}) failed: {e}");
+                        continue;
+                    }
+                };
+
+                // Skip followers whose inbox is served by this node.
+                if profile.inbox_url.starts_with(&node_api_base) {
+                    continue;
+                }
+
+                push_to_inbox(
+                    &client,
+                    &unit,
+                    &profile.inbox_url,
+                    &signing_key,
+                    &node_did,
+                    &storage,
+                )
+                .await;
+            }
+            return;
+        }
+
+        Visibility::Limited => {} // handled below
     }
 
     let audience: Vec<String> = unit.audience.clone().unwrap_or_default();
@@ -312,68 +363,77 @@ async fn remote_fanout(
             continue; // discovery failed; already notified above
         };
         for addr in addrs {
-            let inbox = addr.inbox_url(api_base);
-            // Parse the inbox URL to extract host and path for signing.
-            let (req_host, req_path) = match reqwest::Url::parse(&inbox) {
-                Ok(parsed) => {
-                    let host: String = parsed.host_str().unwrap_or(hostname.as_str()).to_string();
-                    let path = if let Some(q) = parsed.query() {
-                        format!("{}?{}", parsed.path(), q)
-                    } else {
-                        parsed.path().to_string()
-                    };
-                    (host, path)
-                }
-                Err(_) => (hostname.clone(), format!("/v1/agents/{}/inbox", addr.did)),
+            let inbox_url = addr.inbox_url(api_base);
+            push_to_inbox(&client, &unit, &inbox_url, &signing_key, &node_did, &storage).await;
+        }
+    }
+}
+
+/// POST a unit to a remote agent inbox with an HTTP Signature, logging any failure.
+///
+/// Failure notifications are delivered to the original author's local inbox
+/// (if they are registered here) via [`notify_author_of_failure`].
+async fn push_to_inbox(
+    client: &reqwest::Client,
+    unit: &SemanticUnit,
+    inbox_url: &str,
+    signing_key: &ed25519_dalek::SigningKey,
+    node_did: &str,
+    storage: &Arc<dyn Storage>,
+) {
+    let (req_host, req_path) = match reqwest::Url::parse(inbox_url) {
+        Ok(parsed) => {
+            let host = parsed.host_str().unwrap_or("localhost").to_string();
+            let path = if let Some(q) = parsed.query() {
+                format!("{}?{}", parsed.path(), q)
+            } else {
+                parsed.path().to_string()
             };
-            let (date_val, sig_val) = build_outbound_signature(
-                &signing_key,
-                &node_did,
-                "post",
-                &req_path,
-                &req_host,
-            );
-            match client
-                .post(&inbox)
-                .header("date", &date_val)
-                .header("signature", &sig_val)
-                .header("host", &req_host)
-                .json(&unit)
-                .send()
-                .await
-            {
-                Ok(resp) if resp.status().is_success() => {
-                    tracing::debug!(
-                        "remote_fanout: delivered unit {} to {addr}",
-                        unit.id
-                    );
-                }
-                Ok(resp) => {
-                    let status = resp.status().as_u16();
-                    tracing::warn!(
-                        "remote_fanout: delivery to {addr} returned status {status}"
-                    );
-                    notify_author_of_failure(
-                        &storage,
-                        &node_did,
-                        &unit,
-                        &addr.to_string(),
-                        &format!("remote inbox at {addr} returned HTTP {status}"),
-                    )
-                    .await;
-                }
-                Err(e) => {
-                    tracing::warn!("remote_fanout: delivery to {addr} failed: {e}");
-                    notify_author_of_failure(
-                        &storage,
-                        &node_did,
-                        &unit,
-                        &addr.to_string(),
-                        &format!("delivery to {addr} failed: {e}"),
-                    )
-                    .await;
-                }
-            }
+            (host, path)
+        }
+        Err(_) => {
+            tracing::warn!("push_to_inbox: cannot parse URL {inbox_url}");
+            return;
+        }
+    };
+
+    let (date_val, sig_val) =
+        build_outbound_signature(signing_key, node_did, "post", &req_path, &req_host);
+
+    match client
+        .post(inbox_url)
+        .header("date", &date_val)
+        .header("signature", &sig_val)
+        .header("host", &req_host)
+        .json(unit)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            tracing::debug!("push_to_inbox: delivered unit {} to {inbox_url}", unit.id);
+        }
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            tracing::warn!("push_to_inbox: delivery to {inbox_url} returned HTTP {status}");
+            notify_author_of_failure(
+                storage,
+                node_did,
+                unit,
+                inbox_url,
+                &format!("remote inbox returned HTTP {status}"),
+            )
+            .await;
+        }
+        Err(e) => {
+            tracing::warn!("push_to_inbox: delivery to {inbox_url} failed: {e}");
+            notify_author_of_failure(
+                storage,
+                node_did,
+                unit,
+                inbox_url,
+                &format!("delivery failed: {e}"),
+            )
+            .await;
         }
     }
 }
@@ -515,14 +575,18 @@ pub async fn list(
 /// - **`application/json`** (default): returns a `ListResponse` JSON object
 ///   with `units` array and `has_more` flag, suitable for polling clients.
 ///
-/// - **`text/event-stream`**: returns a Server-Sent Events stream. Each unit
-///   is emitted as one SSE event whose `id` field is the unit's UUID and whose
-///   `data` field is the unit's JSON. A final `event: end` marks the end of
-///   the current page. Clients should use the `id` of the last received event
-///   as the `Last-Event-ID` header on reconnect to resume from that cursor.
+/// - **`text/event-stream`**: returns a **persistent** Server-Sent Events
+///   stream. The handler first replays all historical public units from the
+///   cursor position (same semantics as the JSON path), then keeps the
+///   connection alive and pushes each newly submitted public unit in real
+///   time as it arrives. Clients should use the `id` of the last received
+///   event as the `Last-Event-ID` header on reconnect to resume without
+///   gaps. Slow consumers that fall more than [`SSE_CHANNEL_CAPACITY`] events
+///   behind will receive a synthetic `event: lag` event and must reconnect
+///   from their last known cursor.
 ///
-/// The `Last-Event-ID` header (when present) is used as the keyset pagination
-/// cursor, identical to the `after` query parameter.
+/// The `Last-Event-ID` header (when present) is used as the keyset
+/// pagination cursor, identical to the `?after=` query parameter.
 pub async fn sync(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -542,29 +606,42 @@ pub async fn sync(
         .unwrap_or(false);
 
     let filter = build_filter(params, vec![Visibility::Public]);
-    let (units, has_more) = state.storage.list_units(&filter).await?;
 
     if wants_sse {
-        // Build a Server-Sent Events response.
-        // Each unit is one event; the final "end" event signals page completion.
-        let mut body = String::new();
-        for unit in &units {
-            let json = serde_json::to_string(unit)
-                .unwrap_or_else(|_| "{}".to_string());
-            body.push_str(&format!("id: {}\ndata: {}\n\n", unit.id, json));
-        }
-        // Terminal event so the client knows this page is done.
-        let has_more_str = if has_more { "true" } else { "false" };
-        body.push_str(&format!("event: end\ndata: {{\"has_more\":{has_more_str}}}\n\n"));
+        // Subscribe BEFORE querying storage so we don't miss units submitted
+        // between the DB read and the channel subscription.
+        let rx = state.sse_tx.subscribe();
 
-        Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "text/event-stream; charset=utf-8")
-            .header(header::CACHE_CONTROL, "no-cache")
-            .header("x-accel-buffering", "no")
-            .body(axum::body::Body::from(body))
-            .unwrap())
+        let (historical_units, _has_more) = state.storage.list_units(&filter).await?;
+
+        // Build a stream: first the historical batch, then live events.
+        let historical = tokio_stream::iter(historical_units).map(|u| {
+            let json = serde_json::to_string(&u).unwrap_or_else(|_| "{}".to_string());
+            Ok::<Event, std::convert::Infallible>(Event::default().id(u.id).data(json))
+        });
+
+        let live = BroadcastStream::new(rx).filter_map(|result| match result {
+            Ok(unit) => {
+                let json = serde_json::to_string(&*unit).unwrap_or_else(|_| "{}".to_string());
+                Some(Ok::<Event, std::convert::Infallible>(
+                    Event::default().id(unit.id.clone()).data(json),
+                ))
+            }
+            Err(_lagged) => {
+                // The subscriber fell behind. Send a lag event so the client
+                // knows to reconnect from its last cursor.
+                Some(Ok(Event::default().event("lag").data(
+                    r#"{"error":"subscriber_lagged","action":"reconnect_from_cursor"}"#,
+                )))
+            }
+        });
+
+        let stream = historical.chain(live);
+        Ok(Sse::new(stream)
+            .keep_alive(axum::response::sse::KeepAlive::new())
+            .into_response())
     } else {
+        let (units, has_more) = state.storage.list_units(&filter).await?;
         Ok(Json(ListResponse::from_page(units, has_more)).into_response())
     }
 }
@@ -691,7 +768,7 @@ mod tests {
         let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
         let config = NodeConfig::from_env();
         let signing_key = Arc::new(SigningKey::generate(&mut OsRng));
-        build_router(storage, config, signing_key)
+        build_router(storage, config, signing_key).0
     }
 
     fn make_unit() -> SemanticUnit {
@@ -765,11 +842,11 @@ mod tests {
 
     #[tokio::test]
     async fn sync_with_sse_accept_returns_event_stream() {
-        use http_body_util::BodyExt;
+        use std::time::Duration;
 
         let app = build_app();
 
-        // Submit a public unit first.
+        // Submit a public unit first so it appears in the historical replay.
         let unit = make_unit();
         let unit_id = unit.id.clone();
         let submit_req = Request::builder()
@@ -794,18 +871,34 @@ mod tests {
         let ct = sync_resp.headers().get("content-type").unwrap().to_str().unwrap();
         assert!(ct.contains("text/event-stream"), "content-type should be text/event-stream, got {ct}");
 
-        let body_bytes = sync_resp.into_body().collect().await.unwrap().to_bytes();
-        let body_text = std::str::from_utf8(&body_bytes).unwrap();
+        // The SSE stream is now persistent (live). We read with a short deadline
+        // to capture the historical replay frames without blocking forever.
+        use http_body_util::BodyExt;
+        let body_bytes = tokio::time::timeout(
+            Duration::from_millis(200),
+            sync_resp.into_body().collect(),
+        )
+        .await
+        .map(|r| r.unwrap().to_bytes())
+        .unwrap_or_else(|_| bytes::Bytes::new());
+        let body_text = std::str::from_utf8(&body_bytes).unwrap_or("");
 
-        // The unit ID should appear as an SSE event id.
-        assert!(body_text.contains(&format!("id: {unit_id}")),
-            "SSE body should contain 'id: {unit_id}':\n{body_text}");
-        // Each unit's data should be present.
-        assert!(body_text.contains("data: "),
-            "SSE body should contain 'data: ':\n{body_text}");
-        // The end sentinel must be present.
-        assert!(body_text.contains("event: end"),
-            "SSE body should end with 'event: end':\n{body_text}");
+        // The unit ID should appear as an SSE event id in the historical replay.
+        assert!(
+            body_text.contains(&format!("id:{unit_id}"))
+                || body_text.contains(&format!("id: {unit_id}")),
+            "SSE body should contain the submitted unit id ({unit_id}):\n{body_text}"
+        );
+        // Each event's data should be present.
+        assert!(
+            body_text.contains("data:") || body_text.contains("data: "),
+            "SSE body should contain 'data:':\n{body_text}"
+        );
+        // The old snapshot sentinel must NOT appear — it indicates a regression.
+        assert!(
+            !body_text.contains("event: end"),
+            "persistent SSE must not emit 'event: end' sentinel"
+        );
     }
 
     #[tokio::test]

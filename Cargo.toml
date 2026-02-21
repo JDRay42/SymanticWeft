@@ -6,5 +6,6 @@ members = [
     "packages/wasm",
     "packages/node-api",
     "packages/node",
+    "packages/conformance",
 ]
 resolver = "2"
