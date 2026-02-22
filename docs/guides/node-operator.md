@@ -112,6 +112,7 @@ The node is configured entirely through environment variables. No configuration 
 | `SWEFT_SYNC_INTERVAL_SECS` | `60` | Seconds between federation sync rounds. |
 | `SWEFT_BOOTSTRAP_PEERS` | _(absent)_ | Comma-separated list of peer host URLs used for initial peer discovery. Example: `https://node-a.example.com,https://node-b.example.com` |
 | `SWEFT_MAX_PEERS` | `100` | Maximum number of peers to track. When the table is full, the lowest-reputation peer is evicted to make room for a new one. |
+| `SWEFT_REPUTATION_VOTE_SIGMA_FACTOR` | `1.0` | Controls who within the community may submit reputation updates. A peer must have reputation ≥ `max(0.0, mean − σ × stddev)` across all local peers. At `1.0`, roughly the bottom 16% of peers in a diverse community lose voting rights. Set higher to be more restrictive, lower to be more permissive. |
 | `SWEFT_RATE_LIMIT` | `60` | Maximum requests per minute per client IP address. Set to `0` to disable rate limiting. |
 | `RUST_LOG` | `semanticweft_node=info` | Log filter string. Use `debug` or `trace` for verbose output during troubleshooting. |
 
@@ -250,6 +251,8 @@ At least one reachable bootstrap peer is recommended for joining an existing net
 ### Peer reputation
 
 Nodes score each other based on successful responses. Unreachable or non-compliant peers accumulate a lower reputation score and are eventually evicted when `SWEFT_MAX_PEERS` is reached. Reputation recovers when a peer becomes responsive again.
+
+Reputation updates are **community-internal**: only nodes already in your local peer list may call `PATCH /v1/peers/{node_id}` to submit a vote, and they must identify themselves via the `X-Node-ID` request header. Votes are further restricted by a statistical voting threshold (`SWEFT_REPUTATION_VOTE_SIGMA_FACTOR`), and each vote is weighted by the caller's own reputation rather than applied directly — so high-reputation peers have more influence over community scores.
 
 ---
 

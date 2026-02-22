@@ -212,6 +212,7 @@ mod tests {
             max_peers: 100,
             public_key: None,
             rate_limit_per_minute: 2, // very tight — easier to hit in tests
+            reputation_vote_sigma_factor: 1.0,
         };
         let signing_key = Arc::new(SigningKey::generate(&mut OsRng));
         let (app, _) = build_router(storage, config, signing_key);

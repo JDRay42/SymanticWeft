@@ -57,11 +57,16 @@
 //! | `update_peer_reputation_returns_200` | §7 reputation |
 //! | `update_peer_reputation_unknown_returns_404` | §7 reputation |
 //! | `update_own_node_reputation_returns_403` | §7 reputation self-update |
+//! | `update_reputation_without_node_id_returns_403` | §7 community gate |
+//! | `update_reputation_by_outsider_returns_403` | §7 community gate |
+//! | `update_reputation_below_threshold_returns_403` | §7 community gate |
+//! | `new_community_all_same_rep_allows_vote` | §7 community gate |
+//! | `reputation_update_is_weighted_by_caller_rep` | §7 weighted update |
 
 use semanticweft::{RelType, Reference, SemanticUnit, UnitType, Visibility};
 use semanticweft_conformance::spawn_node;
 use semanticweft_node::storage::Storage;
-use semanticweft_node_api::AgentProfile;
+use semanticweft_node_api::{AgentProfile, PeerInfo};
 use serde_json::Value;
 
 // ---------------------------------------------------------------------------
@@ -935,10 +940,18 @@ async fn unfollow_wrong_did_returns_403() {
 
 #[tokio::test]
 async fn update_peer_reputation_returns_200() {
-    let (base, _storage) = spawn_node().await;
+    let (base, storage) = spawn_node().await;
     let client = make_client();
 
-    // Register a peer first.
+    // Seed a voter peer with reputation 1.0 directly in storage.
+    // weight=1.0 → weighted update is a direct override, keeping expected values simple.
+    let voter_id = "did:key:z6MkVoterPeer";
+    let mut voter = PeerInfo::new(voter_id, "https://voter.example.com/v1");
+    voter.reputation = 1.0;
+    storage.add_peer(&voter).await.unwrap();
+    storage.update_peer_reputation(voter_id, 1.0).await.unwrap();
+
+    // Register the target peer via HTTP.
     let peer_id = "did:key:z6MkRepPeer";
     let resp = client
         .post(format!("{base}/v1/peers"))
@@ -951,9 +964,11 @@ async fn update_peer_reputation_returns_200() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    // Update its reputation.
+    // Update its reputation; voter identifies itself via X-Node-ID.
+    // weight=1.0 → new = 0.5*(0) + 0.85*(1) = 0.85.
     let resp = client
         .patch(format!("{base}/v1/peers/{peer_id}"))
+        .header("x-node-id", voter_id)
         .json(&serde_json::json!({ "reputation": 0.85 }))
         .send()
         .await
@@ -962,7 +977,7 @@ async fn update_peer_reputation_returns_200() {
 
     let body: Value = resp.json().await.unwrap();
     let rep = body["reputation"].as_f64().unwrap();
-    assert!((rep - 0.85).abs() < 1e-5, "expected 0.85, got {rep}");
+    assert!((rep - 0.85).abs() < 1e-4, "expected 0.85 (weight=1.0 voter), got {rep}");
     assert_eq!(body["node_id"].as_str(), Some(peer_id));
 
     // Confirm it's reflected in the peer list.
@@ -974,16 +989,25 @@ async fn update_peer_reputation_returns_200() {
     let body: Value = resp.json().await.unwrap();
     let peers = body["peers"].as_array().unwrap();
     let found = peers.iter().find(|p| p["node_id"].as_str() == Some(peer_id)).unwrap();
-    assert!((found["reputation"].as_f64().unwrap() - 0.85).abs() < 1e-5);
+    assert!((found["reputation"].as_f64().unwrap() - 0.85).abs() < 1e-4);
 }
 
 #[tokio::test]
 async fn update_peer_reputation_unknown_returns_404() {
-    let (base, _storage) = spawn_node().await;
+    let (base, storage) = spawn_node().await;
     let client = make_client();
+
+    // Seed a voter peer (default rep 0.5). In a 1-peer community: mean=0.5,
+    // stddev=0, threshold=0.5. voter.rep=0.5 ≥ 0.5 → can vote.
+    let voter_id = "did:key:z6MkVoterPeer";
+    storage
+        .add_peer(&PeerInfo::new(voter_id, "https://voter.example.com/v1"))
+        .await
+        .unwrap();
 
     let resp = client
         .patch(format!("{base}/v1/peers/did:key:zNotRegistered"))
+        .header("x-node-id", voter_id)
         .json(&serde_json::json!({ "reputation": 0.5 }))
         .send()
         .await
@@ -1005,6 +1029,162 @@ async fn update_own_node_reputation_returns_403() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 403, "a node must not update its own reputation");
+}
+
+/// Community gate: missing X-Node-ID header must be rejected (403).
+#[tokio::test]
+async fn update_reputation_without_node_id_returns_403() {
+    let (base, storage) = spawn_node().await;
+    let client = make_client();
+
+    let peer_id = "did:key:z6MkGatePeer";
+    storage
+        .add_peer(&PeerInfo::new(peer_id, "https://gate.example.com/v1"))
+        .await
+        .unwrap();
+
+    let resp = client
+        .patch(format!("{base}/v1/peers/{peer_id}"))
+        // No X-Node-ID header.
+        .json(&serde_json::json!({ "reputation": 0.8 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403, "missing X-Node-ID must return 403");
+}
+
+/// Community gate: a node_id that is not in the local peer list must be rejected (403).
+#[tokio::test]
+async fn update_reputation_by_outsider_returns_403() {
+    let (base, storage) = spawn_node().await;
+    let client = make_client();
+
+    let peer_id = "did:key:z6MkInsidePeer";
+    storage
+        .add_peer(&PeerInfo::new(peer_id, "https://inside.example.com/v1"))
+        .await
+        .unwrap();
+
+    let resp = client
+        .patch(format!("{base}/v1/peers/{peer_id}"))
+        .header("x-node-id", "did:key:z6MkOutsider") // not in peer list
+        .json(&serde_json::json!({ "reputation": 0.8 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403, "outsider (not in peer list) must return 403");
+}
+
+/// Community gate: a peer whose reputation is below the community threshold
+/// (mean − σ × stddev) must be rejected (403).
+#[tokio::test]
+async fn update_reputation_below_threshold_returns_403() {
+    let (base, storage) = spawn_node().await;
+    let client = make_client();
+
+    // Three peers: two high-rep and one very low-rep (the voter).
+    // mean≈(0.9+0.9+0.05)/3≈0.617, stddev≈0.399, threshold≈0.218.
+    // low voter rep=0.05 < 0.218 → rejected.
+    let mut high_a = PeerInfo::new("did:key:z6MkHighA", "https://ha.example.com/v1");
+    high_a.reputation = 0.9;
+    storage.add_peer(&high_a).await.unwrap();
+    storage.update_peer_reputation("did:key:z6MkHighA", 0.9).await.unwrap();
+
+    let mut high_b = PeerInfo::new("did:key:z6MkHighB", "https://hb.example.com/v1");
+    high_b.reputation = 0.9;
+    storage.add_peer(&high_b).await.unwrap();
+    storage.update_peer_reputation("did:key:z6MkHighB", 0.9).await.unwrap();
+
+    let mut low_voter = PeerInfo::new("did:key:z6MkLowVoter", "https://low.example.com/v1");
+    low_voter.reputation = 0.05;
+    storage.add_peer(&low_voter).await.unwrap();
+    storage.update_peer_reputation("did:key:z6MkLowVoter", 0.05).await.unwrap();
+
+    let target_id = "did:key:z6MkThreshTarget";
+    storage
+        .add_peer(&PeerInfo::new(target_id, "https://target.example.com/v1"))
+        .await
+        .unwrap();
+
+    let resp = client
+        .patch(format!("{base}/v1/peers/{target_id}"))
+        .header("x-node-id", "did:key:z6MkLowVoter")
+        .json(&serde_json::json!({ "reputation": 0.9 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403, "below-threshold voter must return 403");
+}
+
+/// In a new or homogeneous community (all peers at the same reputation), stddev=0
+/// so the threshold equals the mean — and every peer at that score can vote.
+#[tokio::test]
+async fn new_community_all_same_rep_allows_vote() {
+    let (base, storage) = spawn_node().await;
+    let client = make_client();
+
+    // All peers default to 0.5. mean=0.5, stddev=0, threshold=0.5.
+    // voter.rep=0.5 ≥ 0.5 → allowed.
+    let voter_id = "did:key:z6MkNewVoter";
+    storage
+        .add_peer(&PeerInfo::new(voter_id, "https://voter.example.com/v1"))
+        .await
+        .unwrap();
+    let target_id = "did:key:z6MkNewTarget";
+    storage
+        .add_peer(&PeerInfo::new(target_id, "https://target.example.com/v1"))
+        .await
+        .unwrap();
+
+    let resp = client
+        .patch(format!("{base}/v1/peers/{target_id}"))
+        .header("x-node-id", voter_id)
+        .json(&serde_json::json!({ "reputation": 0.7 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(), 200,
+        "in a new community all-equal-rep, every peer must be able to vote"
+    );
+}
+
+/// Reputation updates are weighted by the caller's reputation, not applied directly.
+/// new = current × (1 − weight) + proposed × weight, where weight = caller.reputation.
+#[tokio::test]
+async fn reputation_update_is_weighted_by_caller_rep() {
+    let (base, storage) = spawn_node().await;
+    let client = make_client();
+
+    // Both peers at default 0.5 → threshold=0.5, voter passes.
+    // new = 0.5*(1-0.5) + 0.8*0.5 = 0.25 + 0.40 = 0.65.
+    let voter_id = "did:key:z6MkWeightVoter";
+    storage
+        .add_peer(&PeerInfo::new(voter_id, "https://voter.example.com/v1"))
+        .await
+        .unwrap();
+    let target_id = "did:key:z6MkWeightTarget";
+    storage
+        .add_peer(&PeerInfo::new(target_id, "https://target.example.com/v1"))
+        .await
+        .unwrap();
+
+    let resp = client
+        .patch(format!("{base}/v1/peers/{target_id}"))
+        .header("x-node-id", voter_id)
+        .json(&serde_json::json!({ "reputation": 0.8 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "qualified voter must receive 200");
+
+    let body: Value = resp.json().await.unwrap();
+    let rep = body["reputation"].as_f64().unwrap();
+    // 0.5*(0.5) + 0.8*(0.5) = 0.65
+    assert!(
+        (rep - 0.65).abs() < 1e-4,
+        "expected weighted blend 0.65, got {rep}"
+    );
 }
 
 // ---------------------------------------------------------------------------

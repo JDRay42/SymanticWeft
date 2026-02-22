@@ -89,6 +89,21 @@ pub struct UnitFilter {
 }
 
 // ---------------------------------------------------------------------------
+// ReputationStats
+// ---------------------------------------------------------------------------
+
+/// Aggregate reputation statistics used by the community voting threshold.
+///
+/// Both values are `0.0` when the peer list is empty.
+#[derive(Debug, Clone, Copy)]
+pub struct ReputationStats {
+    /// Mean reputation across all known peers.
+    pub mean: f32,
+    /// Population standard deviation of reputations.
+    pub stddev: f32,
+}
+
+// ---------------------------------------------------------------------------
 // Storage trait
 // ---------------------------------------------------------------------------
 
@@ -178,6 +193,15 @@ pub trait Storage: Send + Sync + 'static {
 
     /// Return all known peers, ordered by reputation descending (best first).
     async fn list_peers(&self) -> Result<Vec<PeerInfo>, StorageError>;
+
+    /// Return aggregate reputation statistics across all known peers.
+    ///
+    /// Used by the community voting threshold gate in `PATCH /v1/peers/{node_id}`
+    /// to compute `threshold = max(0.0, mean − σ_factor × stddev)`. When the peer
+    /// list is empty or every peer has the same reputation (stddev = 0), the threshold
+    /// equals the mean, which means all peers at that score can vote — the correct
+    /// behaviour for new or homogeneous communities.
+    async fn peer_reputation_stats(&self) -> Result<ReputationStats, StorageError>;
 
     // --- Node configuration -------------------------------------------------
 

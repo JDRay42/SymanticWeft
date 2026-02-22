@@ -1,7 +1,8 @@
 # ADR-0008: Peer Reputation System
 
-**Status:** Accepted (design); Deferred (full implementation)
+**Status:** Accepted; Partially implemented (Phase 2 community voting gate live; Phase 2 cross-node propagation and Phase 3 pending)
 **Date:** 2026-02-19
+**Updated:** 2026-02-22
 
 ---
 
@@ -58,7 +59,7 @@ claimed reputation, A must decide:
 
 ## Decision
 
-### Phase 1 — MVP (current implementation)
+### Phase 1 — MVP (implemented)
 
 The data model is established now so the schema never needs to change.
 Each `PeerInfo` record carries:
@@ -71,10 +72,77 @@ Eviction policy: when the peer list is full and a new peer is discovered, evict
 the peer with the lowest reputation, breaking ties by oldest `last_seen`.
 New peers are assigned the neutral reputation `0.5`.
 
-No reputation adjustment is performed in Phase 1 beyond the neutral default.
-The reputation field is reserved for Phase 2.
+### Phase 2a — Community voting gate (implemented)
 
-### Phase 2 — Weighted claim reconciliation (future)
+Reputation adjustments are community-internal. The following rules govern
+`PATCH /v1/peers/{node_id}`:
+
+#### Caller identity
+
+The caller must supply an `X-Node-ID` HTTP header containing its own `node_id`
+(DID). Requests without this header are rejected with `403 Forbidden`.
+
+This header is self-asserted; cryptographic verification is deferred to Phase 3.
+The trust model mirrors existing peer-exchange gossip: nodes trust the node_id
+they receive from an HTTP call to the same degree they trust any other unsigned
+peer announcement. Phase 3 will upgrade this to verified Ed25519 claims.
+
+#### Community membership gate
+
+The caller's `node_id` must appear in the receiving node's local peer list.
+Outsiders — nodes the community does not know — cannot influence reputation
+scores. This makes reputation management strictly community-internal.
+
+#### Community voting threshold
+
+Within the community, only peers whose reputation is at or above the
+community's own statistical floor may vote:
+
+```
+threshold = max(0.0, mean(reputation) − σ_factor × stddev(reputation))
+```
+
+where the statistics are computed over all peers in the local list and
+`σ_factor` is configurable via `SWEFT_REPUTATION_VOTE_SIGMA_FACTOR`
+(default `1.0`).
+
+Key properties:
+
+- When all peers have the same reputation (stddev = 0) — as in a brand-new
+  community — the threshold equals the mean, so every peer can vote. This
+  is the correct behaviour for new or homogeneous communities: the system
+  does not artificially exclude anyone until the community develops enough
+  heterogeneity to define an "outlier".
+- In a healthy, diverse community (~1σ below mean), roughly the bottom 16%
+  of peers lose voting rights. Whether 90% of the population falls above
+  the threshold in a self-congratulating community is an emergent property
+  of that community's choices — the protocol does not second-guess it.
+- The threshold tracks the community's own distribution, not an external
+  absolute value.
+
+#### Weighted update
+
+A qualifying vote is not applied as a direct override. Instead, it is blended
+with the current value using the caller's reputation as the weight:
+
+```
+new_rep(target) =
+    current_rep(target) × (1 − caller_rep) +
+    proposed_rep        × caller_rep
+```
+
+This is the same EigenTrust update rule used for cross-node propagation in
+Phase 2b, now applied to direct `PATCH` calls. A caller with reputation 1.0
+overrides the current value entirely; a caller at the voting threshold barely
+moves the needle.
+
+#### Self-update prohibition
+
+A node cannot adjust its own reputation. Requests where the `PATCH` target DID
+matches the receiving node's own `node_id` are rejected with `403 Forbidden`,
+regardless of who is calling.
+
+### Phase 2b — Weighted claim reconciliation (future)
 
 When Node A receives a peer list from Node B that includes `(C, reputation_B_of_C)`:
 

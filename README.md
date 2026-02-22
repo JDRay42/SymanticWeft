@@ -120,18 +120,27 @@ Nodes enforce visibility at retrieval: a non-audience agent requesting a `limite
 
 The network is self-organising: nodes discover each other through bootstrap peers and peer announcements, with no central registry. Each node independently tracks a **reputation score** for every peer it knows about — a number in `[0.0, 1.0]` that reflects how reliably that peer has behaved. Scores default to `0.5` (neutral) and shift based on reachability checks and protocol compliance.
 
-Any node can signal its assessment of a peer:
+Reputation is **community-local**: each node's scores are its own independent view. A peer can have a high reputation in one community and a low one in another. When content flows between communities, the originating community's reputation of the content's author travels as metadata, and the receiving community weights it by their local opinion of the sender.
+
+Community members signal their assessment of a peer:
 
 ```sh
 PATCH /v1/peers/{peer-node-id}
+X-Node-ID: did:key:z6MkMyOwnNode
 {"reputation": 0.8}
 ```
 
-When a node's peer table is full and a new peer is discovered, the lowest-reputation peer is evicted to make room. This gives well-behaved, reachable nodes a natural advantage in the network.
+The update is **community-gated and weighted**:
 
-**A node cannot update its own reputation.** Submitting a `PATCH` where the target DID matches the receiving node's own identity returns `403 Forbidden`. Reputation is always a third-party assessment — the same principle that makes self-referential peer reviews meaningless.
+- The `X-Node-ID` header identifies the caller. Only nodes already in the local peer list may submit updates — outsiders are rejected with `403`.
+- Within the community, only peers whose reputation is at or above `max(0.0, mean − σ × stddev)` across all local peers may vote. When all peers share the same reputation (as in a brand-new community), stddev is 0 and the threshold equals the mean — so every peer can vote. As the community matures and heterogeneity develops, outliers at the bottom lose their vote.
+- Votes are blended into the current value using the caller's reputation as weight: `new = current × (1 − weight) + proposed × weight`. A high-reputation peer has proportionally more influence.
 
-See [ADR-0008](docs/decisions/0008-peer-reputation-system.md) for the full design, including the planned weighted reconciliation algorithm for Phase 2.
+**A node cannot update its own reputation.** Submitting a `PATCH` where the target DID matches the receiving node's own identity returns `403 Forbidden`.
+
+When a node's peer table is full and a new peer is discovered, the lowest-reputation peer is evicted to make room. The threshold factor is configurable via `SWEFT_REPUTATION_VOTE_SIGMA_FACTOR` (default `1.0`).
+
+See [ADR-0008](docs/decisions/0008-peer-reputation-system.md) for the full design, including the planned weighted cross-node reconciliation algorithm.
 
 ---
 

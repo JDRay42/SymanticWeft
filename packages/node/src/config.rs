@@ -19,6 +19,7 @@ use std::net::SocketAddr;
 /// | `SWEFT_BOOTSTRAP_PEERS` | (absent) | Comma-separated peer API base URLs |
 /// | `SWEFT_MAX_PEERS` | `100` | Maximum number of peers to track |
 /// | `SWEFT_RATE_LIMIT` | `60` | Max requests per minute per client IP (0 = unlimited) |
+/// | `SWEFT_REPUTATION_VOTE_SIGMA_FACTOR` | `1.0` | Standard deviations below mean at which a peer loses voting rights |
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
     /// Stable DID identifier for this node. Set to a generated `did:key` in
@@ -61,6 +62,20 @@ pub struct NodeConfig {
     /// `0` disables rate limiting entirely.
     /// Set via `SWEFT_RATE_LIMIT`. Default: 60.
     pub rate_limit_per_minute: u32,
+
+    /// Number of standard deviations below the community mean reputation at which
+    /// a peer loses the right to vote on reputation updates.
+    ///
+    /// The voting threshold is `max(0.0, mean − sigma_factor × stddev)`. A peer
+    /// whose reputation is below this threshold has `PATCH /v1/peers/{id}` calls
+    /// rejected with `403 Forbidden`.
+    ///
+    /// When every peer has the same reputation (stddev = 0) the threshold equals
+    /// the mean, so all peers at that score can still vote — the correct behaviour
+    /// for new or homogeneous communities.
+    ///
+    /// Set via `SWEFT_REPUTATION_VOTE_SIGMA_FACTOR`. Default: `1.0`.
+    pub reputation_vote_sigma_factor: f32,
 }
 
 impl NodeConfig {
@@ -101,6 +116,11 @@ impl NodeConfig {
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(60);
 
+        let reputation_vote_sigma_factor = std::env::var("SWEFT_REPUTATION_VOTE_SIGMA_FACTOR")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(1.0);
+
         // Sentinel replaced in main after identity init.
         let node_id = std::env::var("SWEFT_NODE_ID")
             .unwrap_or_else(|_| "__generate__".into());
@@ -117,6 +137,7 @@ impl NodeConfig {
             max_peers,
             public_key: None,
             rate_limit_per_minute,
+            reputation_vote_sigma_factor,
         }
     }
 
