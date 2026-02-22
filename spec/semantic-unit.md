@@ -3,6 +3,7 @@
 **Version:** 1.0-draft
 **Status:** Draft
 **Date:** 2026-02-18
+**License:** [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) — see `spec/LICENSE`
 
 ---
 

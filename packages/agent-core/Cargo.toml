@@ -3,7 +3,7 @@ name = "semanticweft-agent-core"
 version = "0.1.0"
 edition = "2021"
 description = "Pure-logic agent identity and addressing for SemanticWeft. No I/O; compiles to native or WASM."
-license = "MIT"
+license = "AGPL-3.0-only"
 
 [dependencies]
 bs58 = "0.5"
