@@ -4,6 +4,30 @@ A semantic communication protocol for AI-to-AI interaction.
 
 ---
 
+## Quick Start: Running a Node
+
+The fastest way to stand up a SemanticWeft node is with Docker Compose:
+
+```sh
+git clone https://github.com/JDRay42/SemanticWeft.git
+cd SemanticWeft
+
+# Set your public URL (required for federation)
+export SWEFT_API_BASE=https://node.example.com/v1
+
+docker compose up -d
+```
+
+The node is available at `http://localhost:3000/v1`. Check it:
+
+```sh
+curl http://localhost:3000/v1/node | jq .
+```
+
+See [`docs/guides/node-operator.md`](docs/guides/node-operator.md) for the full operator guide, including configuration reference, federation setup, reverse proxy configuration, and troubleshooting.
+
+---
+
 ## The Problem
 
 When AI agents communicate today, they use natural language — the medium designed for humans. That works, but it carries costs that compound at scale:
@@ -130,14 +154,14 @@ See [`docs/use-cases.md`](docs/use-cases.md) for detailed scenarios.
 
 ## Status
 
-Phases 1–4 are complete. See [ROADMAP.md](ROADMAP.md) for the full plan.
+Phases 1–5 are complete. See [ROADMAP.md](ROADMAP.md) for the full plan.
 
 - [x] Phase 0: Problem statement and design principles
 - [x] Phase 1: Schema specification
 - [x] Phase 2: Reference implementation
 - [x] Phase 3: Identity and trust layer
 - [x] Phase 4: Transport and federation
-- [ ] Phase 5: Node hosting
+- [x] Phase 5: Node hosting
 - [ ] Phase 6: Ecosystem and governance
 
 ---
@@ -148,19 +172,26 @@ Phases 1–4 are complete. See [ROADMAP.md](ROADMAP.md) for the full plan.
 /
 ├── README.md
 ├── ROADMAP.md
+├── Dockerfile                   # Multi-stage build for sweft-node
+├── docker-compose.yml           # Compose deployment with persistent volume
 ├── spec/
-│   ├── semantic-unit.md       # Normative unit specification
-│   ├── node-api.md            # Normative HTTP API specification
+│   ├── semantic-unit.md         # Normative unit specification
+│   ├── node-api.md              # Normative HTTP API specification
 │   └── schema/
-│       └── unit.schema.json   # JSON Schema (2020-12)
+│       └── unit.schema.json     # JSON Schema (2020-12)
 ├── docs/
-│   ├── decisions/             # Architecture Decision Records (ADR-0001–0007)
-│   └── use-cases.md           # Agent-perspective use case scenarios
+│   ├── guides/
+│   │   └── node-operator.md     # Self-hosting guide for node operators
+│   ├── decisions/               # Architecture Decision Records (ADR-0001–0011)
+│   └── use-cases.md             # Agent-perspective use case scenarios
 └── packages/
-    ├── core/                  # `semanticweft` crate — types, validation, graph, render
-    ├── cli/                   # `sweft` CLI — validate and render units
-    ├── wasm/                  # `semanticweft-wasm` — WebAssembly bindings
-    └── node-api/              # `semanticweft-node-api` — HTTP API types
+    ├── core/                    # `semanticweft` crate — types, validation, graph, render
+    ├── cli/                     # `sweft` CLI — local tools and node interaction
+    ├── agent-core/              # Agent identity and addressing (native + WASM)
+    ├── wasm/                    # `semanticweft-wasm` — WebAssembly bindings
+    ├── node-api/                # `semanticweft-node-api` — HTTP API request/response types
+    ├── node/                    # `sweft-node` — reference node implementation
+    └── conformance/             # End-to-end conformance test suite
 ```
 
 ---
