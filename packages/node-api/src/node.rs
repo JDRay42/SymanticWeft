@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 ///   "node_id": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuias8siQmsDNyZCeT",
 ///   "name": "Example Research Node",
 ///   "protocol_version": "1.0",
-///   "api_base": "https://node.example.com/v1",
+///   "api_base": "https://node.example.com",
 ///   "capabilities": ["sync", "sse", "subgraph", "peers"],
 ///   "signing_required": false,
 ///   "pow_required": null,
@@ -33,8 +33,8 @@ pub struct NodeInfo {
     /// Highest protocol version supported. MUST be `"1.0"` for conformant nodes.
     pub protocol_version: String,
 
-    /// Base URL for all `/v1/` endpoints.
-    /// Example: `"https://node.example.com/v1"`.
+    /// Public host URL of this node.
+    /// Example: `"https://node.example.com"`.
     pub api_base: String,
 
     /// Optional features this node supports. See [`Capability`].
@@ -124,7 +124,7 @@ mod tests {
     fn minimal_node_info_roundtrip() {
         let info = NodeInfo::new(
             "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuias8siQmsDNyZCeT",
-            "https://node.example.com/v1",
+            "https://node.example.com",
         );
         let json = serde_json::to_string(&info).unwrap();
         let back: NodeInfo = serde_json::from_str(&json).unwrap();
@@ -140,7 +140,7 @@ mod tests {
             "node_id": "did:key:z6Mk",
             "name": "Test Node",
             "protocol_version": "1.0",
-            "api_base": "https://example.com/v1",
+            "api_base": "https://example.com",
             "capabilities": ["sync", "sse", "subgraph", "peers"],
             "signing_required": true,
             "pow_required": { "algorithm": "sha256", "difficulty": 20 },

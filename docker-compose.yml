@@ -10,9 +10,9 @@ services:
       - node-data:/data
     environment:
       # -- Required in production -----------------------------------------
-      # Set this to the public URL where your node is reachable by peers.
+      # Set this to the public host URL where your node is reachable by peers.
       # Without it, federation peers cannot connect back to you.
-      SWEFT_API_BASE: "${SWEFT_API_BASE:-http://localhost:3000/v1}"
+      SWEFT_API_BASE: "${SWEFT_API_BASE:-http://localhost:3000}"
 
       # -- Identity (optional) -------------------------------------------
       # A stable DID for this node. Generated automatically on first start
@@ -31,7 +31,7 @@ services:
       SWEFT_DB: /data/node.db
 
       # -- Federation (optional) ----------------------------------------
-      # Comma-separated list of peer API base URLs for bootstrap discovery.
+      # Comma-separated list of peer host URLs for bootstrap discovery.
       SWEFT_BOOTSTRAP_PEERS: "${SWEFT_BOOTSTRAP_PEERS:-}"
       # Seconds between federation sync rounds (default: 60).
       SWEFT_SYNC_INTERVAL_SECS: "${SWEFT_SYNC_INTERVAL_SECS:-60}"

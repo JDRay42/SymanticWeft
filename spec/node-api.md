@@ -57,18 +57,19 @@ See [ADR-0005](../docs/decisions/0005-consistency-model.md) for rationale.
 
 ## 3. Protocol Version and Base URL
 
-All versioned endpoints are served under the path prefix `/v1/`. A node MUST
-serve all endpoints listed in Section 5 under this prefix.
-
-The base URL for a node is the scheme and host at which the node is reachable,
-combined with the `/v1/` prefix:
+A node is identified by its public host URL — scheme and host only, with no
+path component:
 
 ```
-https://node.example.com/v1/
+https://node.example.com
 ```
 
-A node MAY serve the API under a subpath (e.g., `/sweft/v1/`). The actual
-base URL is advertised in the node's discovery document (Section 6).
+All versioned API endpoints are served under the `/v1/` path prefix. A node
+MUST serve all endpoints listed in Section 5 under this prefix. Clients
+construct endpoint URLs by appending `/v1/<path>` to the node's host URL.
+
+The actual host URL is advertised in the node's discovery document (Section 6)
+and MUST NOT include a path suffix.
 
 Future versions of this specification will use `/v2/`, `/v3/`, etc. A node
 MAY serve multiple versions simultaneously. The `protocol_version` field in
@@ -383,7 +384,7 @@ for all discovery and is the primary mechanism for bootstrapping the peer graph.
   "node_id": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuias8siQmsDNyZCeT",
   "name": "Example Research Node",
   "protocol_version": "1.0",
-  "api_base": "https://node.example.com/v1",
+  "api_base": "https://node.example.com",
   "capabilities": ["sync", "sse"],
   "signing_required": false,
   "pow_required": null,
@@ -396,7 +397,7 @@ for all discovery and is the primary mechanism for bootstrapping the peer graph.
 | `node_id` | string | REQUIRED | A stable identifier for this node. SHOULD be a DID (see ADR-0001). |
 | `name` | string | OPTIONAL | Human-readable name for this node. |
 | `protocol_version` | string | REQUIRED | The highest version of this spec supported. MUST be `"1.0"` for conformant nodes. |
-| `api_base` | string | REQUIRED | The base URL for all versioned endpoints (e.g., `https://node.example.com/v1`). |
+| `api_base` | string | REQUIRED | The public host URL of this node (e.g., `https://node.example.com`). MUST NOT include a path. Peers append `/v1/` to construct versioned endpoint URLs. |
 | `capabilities` | array of strings | REQUIRED | Features this node supports. See Section 6.2 for defined values. |
 | `signing_required` | boolean | OPTIONAL | If `true`, the node rejects unsigned units. Default: `false`. |
 | `pow_required` | object or null | OPTIONAL | PoW parameters if required. See ADR-0006. |
@@ -437,7 +438,7 @@ Return the list of peer nodes known to this node.
   "peers": [
     {
       "node_id": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooW",
-      "api_base": "https://peer.example.com/v1"
+      "api_base": "https://peer.example.com"
     }
   ]
 }
@@ -448,7 +449,7 @@ Each peer object contains:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `node_id` | string | REQUIRED | The peer's stable identifier. |
-| `api_base` | string | REQUIRED | The peer's API base URL. |
+| `api_base` | string | REQUIRED | The peer's public host URL. |
 
 Nodes MAY choose not to expose their peer list for operational or privacy
 reasons. If the endpoint is not available, the node MUST omit `peers` from
@@ -468,7 +469,7 @@ of new peers through the network.
 ```json
 {
   "node_id": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooW",
-  "api_base": "https://peer.example.com/v1"
+  "api_base": "https://peer.example.com"
 }
 ```
 

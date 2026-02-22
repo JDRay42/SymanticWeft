@@ -13,7 +13,7 @@ git clone https://github.com/JDRay42/SemanticWeft.git
 cd SemanticWeft
 
 # Set your public URL (required for federation)
-export SWEFT_API_BASE=https://node.example.com/v1
+export SWEFT_API_BASE=https://node.example.com
 
 docker compose up -d
 ```

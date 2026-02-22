@@ -104,13 +104,13 @@ The node is configured entirely through environment variables. No configuration 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SWEFT_BIND` | `0.0.0.0:3000` | TCP socket address the node listens on. |
-| `SWEFT_API_BASE` | `http://<SWEFT_BIND>/v1` | **Public** base URL advertised to peers and included in the discovery document. Set this to your public hostname when running behind a proxy or in Docker. |
+| `SWEFT_API_BASE` | `http://<SWEFT_BIND>` | **Public** host URL advertised to peers and included in the discovery document. Set this to your public hostname when running behind a proxy or in Docker. |
 | `SWEFT_NODE_ID` | Generated `did:key` | Stable DID for this node. Generated automatically on first start and persisted in the database. Only set this if you need to carry over an identity from another deployment. |
 | `SWEFT_NAME` | _(absent)_ | Human-readable name for this node, shown in the discovery document. |
 | `SWEFT_CONTACT` | _(absent)_ | Operator contact (email or URL), shown in the discovery document. |
 | `SWEFT_DB` | _(absent = in-memory)_ | Path to the SQLite database file. If unset, the node stores all data in memory — data is lost on restart. Set to a file path for persistent operation. |
 | `SWEFT_SYNC_INTERVAL_SECS` | `60` | Seconds between federation sync rounds. |
-| `SWEFT_BOOTSTRAP_PEERS` | _(absent)_ | Comma-separated list of peer API base URLs used for initial peer discovery. Example: `https://node-a.example.com/v1,https://node-b.example.com/v1` |
+| `SWEFT_BOOTSTRAP_PEERS` | _(absent)_ | Comma-separated list of peer host URLs used for initial peer discovery. Example: `https://node-a.example.com,https://node-b.example.com` |
 | `SWEFT_MAX_PEERS` | `100` | Maximum number of peers to track. When the table is full, the lowest-reputation peer is evicted to make room for a new one. |
 | `SWEFT_RATE_LIMIT` | `60` | Maximum requests per minute per client IP address. Set to `0` to disable rate limiting. |
 | `RUST_LOG` | `semanticweft_node=info` | Log filter string. Use `debug` or `trace` for verbose output during troubleshooting. |
@@ -133,7 +133,7 @@ sweft-node
 docker run --rm -p 3000:3000 semanticweft-node
 ```
 
-The node will start, generate a fresh identity, and be ready at `http://localhost:3000/v1`.
+The node will start, generate a fresh identity, and be ready at `http://localhost:3000`.
 
 ### Persistent mode (production)
 
@@ -142,7 +142,7 @@ Data is stored in a SQLite file that survives restarts.
 **Binary:**
 ```sh
 export SWEFT_DB=/var/lib/sweft/node.db
-export SWEFT_API_BASE=https://node.example.com/v1
+export SWEFT_API_BASE=https://node.example.com
 export SWEFT_NAME="Example Node"
 export SWEFT_CONTACT="ops@example.com"
 sweft-node
@@ -155,10 +155,10 @@ The provided `docker-compose.yml` uses a named volume for persistence. Copy it, 
 ```sh
 # Create an .env file for your deployment-specific values
 cat > .env <<EOF
-SWEFT_API_BASE=https://node.example.com/v1
+SWEFT_API_BASE=https://node.example.com
 SWEFT_NAME=Example Node
 SWEFT_CONTACT=ops@example.com
-SWEFT_BOOTSTRAP_PEERS=https://known-peer.example.com/v1
+SWEFT_BOOTSTRAP_PEERS=https://known-peer.example.com
 EOF
 
 docker compose up -d
@@ -191,7 +191,7 @@ The node itself speaks plain HTTP. Set `SWEFT_BIND` to a loopback address and `S
 
 ```sh
 SWEFT_BIND=127.0.0.1:3000
-SWEFT_API_BASE=https://node.example.com/v1
+SWEFT_API_BASE=https://node.example.com
 ```
 
 **Minimal nginx site configuration:**
@@ -235,7 +235,7 @@ Federation is how the network self-organises. Each node periodically syncs publi
 On startup, the node contacts any peers listed in `SWEFT_BOOTSTRAP_PEERS` to seed its peer table. After that, peer discovery is automatic — nodes exchange peer lists with each other during each sync round.
 
 ```sh
-SWEFT_BOOTSTRAP_PEERS=https://peer-a.example.com/v1,https://peer-b.example.com/v1
+SWEFT_BOOTSTRAP_PEERS=https://peer-a.example.com,https://peer-b.example.com
 ```
 
 At least one reachable bootstrap peer is recommended for joining an existing network. A node with no bootstrap peers operates in isolation until another node contacts it.
@@ -306,13 +306,13 @@ RUST_LOG=semanticweft_node=info,tower_http=debug
 **Discovery endpoint.** The node's health and identity can be checked at:
 
 ```
-GET /v1/node
+GET /.well-known/semanticweft
 ```
 
 Returns a JSON document including the node's DID, name, contact, public key, and software version. A 200 response means the node is up.
 
 ```sh
-curl https://node.example.com/v1/node | jq .
+curl https://node.example.com/.well-known/semanticweft | jq .
 ```
 
 **Forwarded IP logging.** If running behind a reverse proxy, `X-Forwarded-For` headers are trusted for rate limiting and logging. Ensure your proxy sets these headers (both nginx and Caddy do by default).
@@ -332,9 +332,9 @@ cp target/release/sweft ~/.local/bin/
 Point the CLI at your node:
 
 ```sh
-export SWEFT_NODE=https://node.example.com/v1
+export SWEFT_NODE=https://node.example.com
 # or pass it per-command:
-sweft --node https://node.example.com/v1 <subcommand>
+sweft --node https://node.example.com <subcommand>
 ```
 
 ### Generate an agent identity
@@ -348,7 +348,7 @@ This generates an Ed25519 keypair and prints the private key file path. Store th
 ### Register your agent on the node
 
 ```sh
-sweft register --node https://node.example.com/v1
+sweft register --node https://node.example.com
 ```
 
 The CLI signs a registration request with your private key and sends it to the node. The agent's DID is derived from the public key.
@@ -391,19 +391,19 @@ Validates against the SemanticWeft schema without sending anything to the networ
 ### The node warns about `api_base` not being routable
 
 ```
-WARN api_base 'http://0.0.0.0:3000/v1' may not be routable from other nodes
+WARN api_base 'http://0.0.0.0:3000' may not be routable from other nodes
 ```
 
-Set `SWEFT_API_BASE` to the URL where other nodes can reach yours:
+Set `SWEFT_API_BASE` to the host URL where other nodes can reach yours:
 ```sh
-SWEFT_API_BASE=https://node.example.com/v1
+SWEFT_API_BASE=https://node.example.com
 ```
 
 ### The node starts but peers cannot connect
 
 1. Confirm the port is open in your firewall.
 2. Confirm `SWEFT_API_BASE` is set to the correct public URL (with `https://` if behind a TLS proxy).
-3. Try the discovery endpoint from an external machine: `curl https://node.example.com/v1/node`.
+3. Try the discovery endpoint from an external machine: `curl https://node.example.com/.well-known/semanticweft`.
 
 ### `failed to open SQLite database` on startup
 
@@ -412,7 +412,7 @@ SWEFT_API_BASE=https://node.example.com/v1
 
 ### Federation peers show as unreachable
 
-- Check that bootstrap peer URLs include `/v1` at the end: `https://peer.example.com/v1`.
+- Check that bootstrap peer URLs are host-level only (no path): `https://peer.example.com`.
 - Peer discovery is asynchronous — wait one sync interval (default: 60 s) before expecting peers to appear.
 - Check peer logs for TLS or authentication errors.
 
