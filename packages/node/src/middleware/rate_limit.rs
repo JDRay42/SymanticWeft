@@ -213,6 +213,8 @@ mod tests {
             public_key: None,
             rate_limit_per_minute: 2, // very tight — easier to hit in tests
             reputation_vote_sigma_factor: 1.0,
+            operator_webhook_url: None,
+            probation_threshold: 10,
         };
         let signing_key = Arc::new(SigningKey::generate(&mut OsRng));
         let (app, _) = build_router(storage, config, signing_key);

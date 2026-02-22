@@ -45,6 +45,8 @@ pub async fn spawn_node() -> (String, Arc<MemoryStorage>) {
         public_key: None,
         rate_limit_per_minute: 0,
         reputation_vote_sigma_factor: 1.0,
+        operator_webhook_url: None,
+        probation_threshold: 10,
     };
     let signing_key = Arc::new(SigningKey::generate(&mut OsRng));
     let (router, _sse_tx) = build_router(storage, config, signing_key);

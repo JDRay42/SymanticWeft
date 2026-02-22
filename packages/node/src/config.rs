@@ -20,6 +20,8 @@ use std::net::SocketAddr;
 /// | `SWEFT_MAX_PEERS` | `100` | Maximum number of peers to track |
 /// | `SWEFT_RATE_LIMIT` | `60` | Max requests per minute per client IP (0 = unlimited) |
 /// | `SWEFT_REPUTATION_VOTE_SIGMA_FACTOR` | `1.0` | Standard deviations below mean at which a peer loses voting rights |
+/// | `SWEFT_OPERATOR_WEBHOOK` | (absent) | URL to POST agent-admission notifications to (ADR-0013) |
+/// | `SWEFT_PROBATION_THRESHOLD` | `10` | Contributions required for a probationary agent to graduate to full membership |
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
     /// Stable DID identifier for this node. Set to a generated `did:key` in
@@ -76,6 +78,28 @@ pub struct NodeConfig {
     ///
     /// Set via `SWEFT_REPUTATION_VOTE_SIGMA_FACTOR`. Default: `1.0`.
     pub reputation_vote_sigma_factor: f32,
+
+    /// URL to POST agent-admission notifications to (ADR-0013).
+    ///
+    /// When set, the node fires a `POST` to this URL (fire-and-forget) whenever
+    /// an agent joins via the self-service `POST /v1/agents/{did}/apply` endpoint.
+    /// The payload is a JSON object with `event`, `node_id`, `agent`, `sponsor_did`,
+    /// and `sponsor_valid` fields. Operators are responsible for receiving and
+    /// routing these notifications; integration with email, Slack, PagerDuty, etc.
+    /// is out of scope for this project.
+    ///
+    /// Set via `SWEFT_OPERATOR_WEBHOOK`. Default: absent (notifications silenced).
+    pub operator_webhook_url: Option<String>,
+
+    /// Minimum number of community contributions a probationary agent must
+    /// accumulate before automatically graduating to full membership (ADR-0013).
+    ///
+    /// A "contribution" is any authenticated community action recorded by the node
+    /// (e.g., following another agent). Time is not a factor; only contributions
+    /// count, because time operates differently for software agents than for humans.
+    ///
+    /// Set via `SWEFT_PROBATION_THRESHOLD`. Default: `10`.
+    pub probation_threshold: u32,
 }
 
 impl NodeConfig {
@@ -125,6 +149,11 @@ impl NodeConfig {
         let node_id = std::env::var("SWEFT_NODE_ID")
             .unwrap_or_else(|_| "__generate__".into());
 
+        let probation_threshold = std::env::var("SWEFT_PROBATION_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(10);
+
         Self {
             node_id,
             name: std::env::var("SWEFT_NAME").ok(),
@@ -138,6 +167,8 @@ impl NodeConfig {
             public_key: None,
             rate_limit_per_minute,
             reputation_vote_sigma_factor,
+            operator_webhook_url: std::env::var("SWEFT_OPERATOR_WEBHOOK").ok(),
+            probation_threshold,
         }
     }
 

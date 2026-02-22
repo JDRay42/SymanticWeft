@@ -523,6 +523,8 @@ mod tests {
             inbox_url: format!("http://localhost/v1/agents/{did}/inbox"),
             display_name: None,
             public_key: Some(multibase.to_string()),
+            status: semanticweft_node_api::AgentStatus::Full,
+            contribution_count: 0,
         };
         storage.put_agent(&profile).await.unwrap();
 
@@ -539,6 +541,8 @@ mod tests {
             public_key: None,
             rate_limit_per_minute: 0, // disabled in tests
             reputation_vote_sigma_factor: 1.0,
+            operator_webhook_url: None,
+            probation_threshold: 10,
         };
         // Use a dummy signing key for tests
         let node_signing_key = Arc::new(SigningKey::generate(&mut OsRng));

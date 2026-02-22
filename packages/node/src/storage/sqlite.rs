@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use rusqlite::{params, Connection};
 use semanticweft::{SemanticUnit, Visibility};
-use semanticweft_node_api::{AgentProfile, PeerInfo};
+use semanticweft_node_api::{AgentProfile, AgentStatus, PeerInfo};
 
 use super::{ReputationStats, Storage, StorageError, UnitFilter};
 
@@ -51,10 +51,12 @@ CREATE TABLE IF NOT EXISTS unit_references (
 CREATE INDEX IF NOT EXISTS idx_unit_refs_referenced ON unit_references(referenced_id);
 
 CREATE TABLE IF NOT EXISTS agents (
-    did          TEXT PRIMARY KEY,
-    inbox_url    TEXT NOT NULL,
-    display_name TEXT,
-    public_key   TEXT
+    did                TEXT PRIMARY KEY,
+    inbox_url          TEXT NOT NULL,
+    display_name       TEXT,
+    public_key         TEXT,
+    status             TEXT NOT NULL DEFAULT 'full',
+    contribution_count INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS follows (
@@ -137,6 +139,16 @@ impl SqliteStorage {
             [],
         );
         let _ = conn.execute("ALTER TABLE peers ADD COLUMN last_seen TEXT", []);
+
+        // agents: status and contribution_count columns (added in ADR-0013).
+        let _ = conn.execute(
+            "ALTER TABLE agents ADD COLUMN status TEXT NOT NULL DEFAULT 'full'",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE agents ADD COLUMN contribution_count INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
 
         // node_config table is covered by CREATE TABLE IF NOT EXISTS in SCHEMA.
         Ok(())
@@ -405,19 +417,27 @@ impl Storage for SqliteStorage {
         let profile = profile.clone();
 
         tokio::task::spawn_blocking(move || {
+            let status_str = match profile.status {
+                AgentStatus::Full => "full",
+                AgentStatus::Probationary => "probationary",
+            };
             let conn = conn.lock().unwrap();
             conn.execute(
-                "INSERT INTO agents (did, inbox_url, display_name, public_key)
-                 VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO agents (did, inbox_url, display_name, public_key, status, contribution_count)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(did) DO UPDATE SET
-                   inbox_url    = excluded.inbox_url,
-                   display_name = excluded.display_name,
-                   public_key   = excluded.public_key",
+                   inbox_url          = excluded.inbox_url,
+                   display_name       = excluded.display_name,
+                   public_key         = excluded.public_key,
+                   status             = excluded.status,
+                   contribution_count = excluded.contribution_count",
                 params![
                     profile.did,
                     profile.inbox_url,
                     profile.display_name,
                     profile.public_key,
+                    status_str,
+                    profile.contribution_count,
                 ],
             )
             .map_err(map_err)?;
@@ -434,15 +454,22 @@ impl Storage for SqliteStorage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let result = conn.query_row(
-                "SELECT did, inbox_url, display_name, public_key
+                "SELECT did, inbox_url, display_name, public_key, status, contribution_count
                  FROM agents WHERE did = ?1",
                 params![did],
                 |row| {
+                    let status_str: String = row.get(4)?;
                     Ok(AgentProfile {
                         did: row.get(0)?,
                         inbox_url: row.get(1)?,
                         display_name: row.get(2)?,
                         public_key: row.get(3)?,
+                        status: if status_str == "probationary" {
+                            AgentStatus::Probationary
+                        } else {
+                            AgentStatus::Full
+                        },
+                        contribution_count: row.get(5)?,
                     })
                 },
             );
@@ -467,6 +494,50 @@ impl Storage for SqliteStorage {
             conn.execute("DELETE FROM inbox WHERE agent_did = ?1", params![did])
                 .map_err(map_err)?;
             Ok(())
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("task join error: {e}")))?
+    }
+
+    async fn increment_agent_contribution(
+        &self,
+        did: &str,
+        threshold: u32,
+    ) -> Result<bool, StorageError> {
+        let conn = Arc::clone(&self.conn);
+        let did = did.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let changed = conn
+                .execute(
+                    "UPDATE agents SET contribution_count = contribution_count + 1 WHERE did = ?1",
+                    params![did],
+                )
+                .map_err(map_err)?;
+
+            if changed == 0 {
+                return Ok(false); // agent not registered
+            }
+
+            let (status_str, count): (String, u32) = conn
+                .query_row(
+                    "SELECT status, contribution_count FROM agents WHERE did = ?1",
+                    params![did],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(map_err)?;
+
+            if status_str == "probationary" && count >= threshold {
+                conn.execute(
+                    "UPDATE agents SET status = 'full' WHERE did = ?1",
+                    params![did],
+                )
+                .map_err(map_err)?;
+                Ok(true) // graduated
+            } else {
+                Ok(false)
+            }
         })
         .await
         .map_err(|e| StorageError::Internal(format!("task join error: {e}")))?

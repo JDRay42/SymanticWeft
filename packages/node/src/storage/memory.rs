@@ -12,7 +12,7 @@ use std::sync::RwLock;
 
 use async_trait::async_trait;
 use semanticweft::{SemanticUnit, Visibility};
-use semanticweft_node_api::{AgentProfile, PeerInfo};
+use semanticweft_node_api::{AgentProfile, AgentStatus, PeerInfo};
 
 use super::{ReputationStats, Storage, StorageError, UnitFilter};
 
@@ -192,6 +192,26 @@ impl Storage for MemoryStorage {
         inner.agents.remove(did);
         inner.inbox.remove(did);
         Ok(())
+    }
+
+    async fn increment_agent_contribution(
+        &self,
+        did: &str,
+        threshold: u32,
+    ) -> Result<bool, StorageError> {
+        let mut inner = self.inner.write().unwrap();
+        if let Some(profile) = inner.agents.get_mut(did) {
+            profile.contribution_count += 1;
+            if profile.status == AgentStatus::Probationary
+                && profile.contribution_count >= threshold
+            {
+                profile.status = AgentStatus::Full;
+                return Ok(true);
+            }
+            Ok(false)
+        } else {
+            Ok(false)
+        }
     }
 
     // --- Follows -------------------------------------------------------------

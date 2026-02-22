@@ -173,6 +173,8 @@ mod tests {
             public_key: None,
             rate_limit_per_minute: 0,
             reputation_vote_sigma_factor: 1.0,
+            operator_webhook_url: None,
+            probation_threshold: 10,
         };
         let signing_key = Arc::new(SigningKey::generate(&mut OsRng));
         build_router(storage, config, signing_key).0
@@ -188,6 +190,8 @@ mod tests {
                 inbox_url: format!("http://localhost/v1/agents/{did}/inbox"),
                 display_name: None,
                 public_key: None,
+                status: semanticweft_node_api::AgentStatus::Full,
+                contribution_count: 0,
             })
             .await
             .unwrap();
@@ -245,6 +249,8 @@ mod tests {
                 inbox_url: format!("http://localhost/v1/agents/{did}/inbox"),
                 display_name: None,
                 public_key: None,
+                status: semanticweft_node_api::AgentStatus::Full,
+                contribution_count: 0,
             })
             .await
             .unwrap();

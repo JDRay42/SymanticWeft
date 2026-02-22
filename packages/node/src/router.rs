@@ -64,6 +64,7 @@ pub fn build_router(
             "/v1/agents/{did}",
             post(agents::register).get(agents::get_agent).delete(agents::delete_agent),
         )
+        .route("/v1/agents/{did}/apply", post(agents::apply))
         .route(
             "/v1/agents/{did}/inbox",
             get(agents::inbox).post(agents::inbox_deliver),

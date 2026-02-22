@@ -19,6 +19,7 @@
 //! | POST | `/v1/peers` | [`PeerInfo`] → [`PeerInfo`] |
 //! | PATCH | `/v1/peers/{node_id}` | [`ReputationUpdate`] → [`PeerInfo`] |
 //! | POST | `/v1/agents/{did}` | [`RegisterRequest`] → [`AgentProfile`] |
+//! | POST | `/v1/agents/{did}/apply` | [`ApplyRequest`] → [`AgentProfile`] |
 //! | GET | `/v1/agents/{did}` | → [`AgentProfile`] |
 //! | GET | `/v1/agents/{did}/inbox` | → [`InboxResponse`] |
 //! | POST | `/v1/agents/{did}/following` | [`FollowRequest`] → `204` |
@@ -32,7 +33,7 @@ pub mod node;
 pub mod peer;
 pub mod unit;
 
-pub use agent::{AgentProfile, InboxResponse, RegisterRequest};
+pub use agent::{AgentProfile, AgentStatus, ApplyRequest, InboxResponse, RegisterRequest};
 pub use error::ErrorResponse;
 pub use follow::{FollowEntry, FollowListResponse, FollowRequest};
 pub use node::{Capability, NodeInfo, PowParams};

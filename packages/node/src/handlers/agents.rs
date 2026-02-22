@@ -19,7 +19,8 @@ use axum::{
 };
 use serde::Deserialize;
 use semanticweft::{validate_unit, SemanticUnit};
-use semanticweft_node_api::{AgentProfile, InboxResponse, RegisterRequest};
+use semanticweft_node_api::{AgentProfile, AgentStatus, ApplyRequest, InboxResponse, RegisterRequest};
+use tracing::{info, warn};
 
 use crate::error::AppError;
 use crate::middleware::auth::{NodeAuth, RequireAuth};
@@ -62,6 +63,8 @@ pub async fn register(
         inbox_url: req.inbox_url,
         display_name: req.display_name,
         public_key: req.public_key,
+        status: AgentStatus::Full,
+        contribution_count: 0,
     };
 
     state.storage.put_agent(&profile).await?;
@@ -180,6 +183,93 @@ pub async fn inbox_deliver(
     Ok(StatusCode::CREATED)
 }
 
+/// `POST /v1/agents/{did}/apply` — self-service application for node membership (ADR-0013).
+///
+/// Implements the tiered admission protocol. All self-service applicants begin
+/// as `Probationary` regardless of tier:
+///
+/// - **Tier 1 (operator):** Use `POST /v1/agents/{did}` for direct Full admission.
+/// - **Tier 2 (sponsored):** Providing a `sponsor_did` that belongs to an existing
+///   `Full`-status member is noted in the webhook notification but does not change
+///   the starting status — it signals community endorsement.
+/// - **Tier 3 (unsponsored):** Admitted as Probationary with no endorsement.
+///
+/// A Probationary agent graduates automatically to Full once their contribution
+/// count reaches the node's configured `probation_threshold`.
+///
+/// If `SWEFT_OPERATOR_WEBHOOK` is set, a notification is fired asynchronously
+/// (fire-and-forget) with the admission details. Webhook delivery failure does
+/// not affect the admission response.
+///
+/// Returns 201 with the stored profile, 409 if the DID is already registered.
+pub async fn apply(
+    State(state): State<AppState>,
+    Path(did): Path<String>,
+    auth: RequireAuth,
+    Json(req): Json<ApplyRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    if req.did != did {
+        return Err(AppError::BadRequest(
+            "did in request body must match the {did} path parameter".into(),
+        ));
+    }
+    if auth.did != did {
+        return Err(AppError::Forbidden("cannot apply as a different DID".into()));
+    }
+
+    // Reject if already registered.
+    if state.storage.get_agent(&did).await?.is_some() {
+        return Err(AppError::Conflict(format!("agent {did} is already registered")));
+    }
+
+    // Check sponsor validity (informational; invalid sponsor does not block admission).
+    let sponsor_valid = match req.sponsor_did.as_deref() {
+        Some(s) => matches!(
+            state.storage.get_agent(s).await?,
+            Some(ref p) if p.status == AgentStatus::Full
+        ),
+        None => false,
+    };
+
+    let profile = AgentProfile {
+        did: req.did.clone(),
+        inbox_url: req.inbox_url,
+        display_name: req.display_name,
+        public_key: req.public_key,
+        status: AgentStatus::Probationary,
+        contribution_count: 0,
+    };
+
+    state.storage.put_agent(&profile).await?;
+    info!(
+        "agent_admission: {} joined as probationary (sponsor={:?}, sponsor_valid={})",
+        did, req.sponsor_did, sponsor_valid
+    );
+
+    // Fire operator webhook asynchronously — failure does not affect the response.
+    if let Some(ref webhook_url) = state.config.operator_webhook_url {
+        let client = state.http_client.clone();
+        let url = webhook_url.clone();
+        let node_id = state.config.node_id.clone();
+        let sponsor_did = req.sponsor_did.clone();
+        let profile_clone = profile.clone();
+        tokio::spawn(async move {
+            let payload = serde_json::json!({
+                "event": "agent_admission",
+                "node_id": node_id,
+                "agent": profile_clone,
+                "sponsor_did": sponsor_did,
+                "sponsor_valid": sponsor_valid,
+            });
+            if let Err(e) = client.post(&url).json(&payload).send().await {
+                warn!("operator webhook delivery failed: {e}");
+            }
+        });
+    }
+
+    Ok((StatusCode::CREATED, Json(profile)))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -225,6 +315,8 @@ mod tests {
             public_key: None,
             rate_limit_per_minute: 0,
             reputation_vote_sigma_factor: 1.0,
+            operator_webhook_url: None,
+            probation_threshold: 10,
         };
         let signing_key = Arc::new(SigningKey::generate(&mut OsRng));
         build_router(storage, config, signing_key).0
@@ -245,6 +337,8 @@ mod tests {
             inbox_url: format!("http://localhost/v1/agents/{agent_did}/inbox"),
             display_name: None,
             public_key: None,
+            status: semanticweft_node_api::AgentStatus::Full,
+            contribution_count: 0,
         }).await.unwrap();
 
         let (node_key, node_did) = make_node_key_and_did();
@@ -278,6 +372,8 @@ mod tests {
             inbox_url: format!("http://localhost/v1/agents/{agent_did}/inbox"),
             display_name: None,
             public_key: None,
+            status: semanticweft_node_api::AgentStatus::Full,
+            contribution_count: 0,
         }).await.unwrap();
 
         let unit = make_unit("did:key:z6MkSomeSender");
@@ -339,6 +435,8 @@ mod tests {
                 inbox_url: format!("http://localhost/v1/agents/{did}/inbox"),
                 display_name: None,
                 public_key: Some(pubkey_multibase.clone()),
+                status: semanticweft_node_api::AgentStatus::Full,
+                contribution_count: 0,
             })
             .await
             .unwrap();
@@ -404,6 +502,8 @@ mod tests {
                 inbox_url: format!("http://localhost/v1/agents/{did_b}/inbox"),
                 display_name: None,
                 public_key: None,
+                status: semanticweft_node_api::AgentStatus::Full,
+                contribution_count: 0,
             })
             .await
             .unwrap();

@@ -17,6 +17,7 @@ use axum::{
     Json,
 };
 use semanticweft_node_api::{FollowEntry, FollowListResponse, FollowRequest};
+use tracing::info;
 
 use crate::error::AppError;
 use crate::middleware::auth::RequireAuth;
@@ -51,10 +52,17 @@ pub async fn follow(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("agent {did} not found")))?;
 
-    state
+    state.storage.add_follow(&did, &req.target).await?;
+
+    // Following is a community contribution; check whether this graduates the
+    // agent from Probationary to Full membership.
+    if state
         .storage
-        .add_follow(&did, &req.target)
-        .await?;
+        .increment_agent_contribution(&did, state.config.probation_threshold)
+        .await?
+    {
+        info!("agent {did} graduated from probationary to full membership");
+    }
 
     Ok((StatusCode::OK, Json(FollowEntry { did: req.target, inbox_url: None })))
 }
@@ -160,6 +168,8 @@ mod tests {
             public_key: None,
             rate_limit_per_minute: 0,
             reputation_vote_sigma_factor: 1.0,
+            operator_webhook_url: None,
+            probation_threshold: 10,
         };
         let signing_key = Arc::new(SigningKey::generate(&mut OsRng));
         build_router(storage, config, signing_key).0
@@ -177,6 +187,8 @@ mod tests {
                 inbox_url: format!("http://localhost/v1/agents/{did}/inbox"),
                 display_name: None,
                 public_key: Some(format!("z{encoded}")),
+                status: semanticweft_node_api::AgentStatus::Full,
+                contribution_count: 0,
             })
             .await
             .unwrap();

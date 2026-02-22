@@ -147,6 +147,19 @@ pub trait Storage: Send + Sync + 'static {
     /// Deregister an agent and purge their inbox. No-op if the DID is not registered.
     async fn delete_agent(&self, did: &str) -> Result<(), StorageError>;
 
+    /// Increment the contribution count for a registered agent.
+    ///
+    /// If the agent's status is `Probationary` and the new count reaches or
+    /// exceeds `threshold`, the status is atomically upgraded to `Full`.
+    ///
+    /// Returns `true` if the agent was graduated to `Full` as a result of this
+    /// call. Returns `Ok(false)` if the agent is not registered (no-op).
+    async fn increment_agent_contribution(
+        &self,
+        did: &str,
+        threshold: u32,
+    ) -> Result<bool, StorageError>;
+
     // --- Follows -------------------------------------------------------------
 
     /// Record that `follower` follows `followee`. Idempotent.
