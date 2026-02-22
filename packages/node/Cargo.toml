@@ -3,7 +3,7 @@ name = "semanticweft-node"
 version = "0.1.0"
 edition = "2021"
 description = "Reference node implementation for the SemanticWeft protocol."
-license = "MIT"
+license = "AGPL-3.0-only"
 
 [[bin]]
 name = "sweft-node"

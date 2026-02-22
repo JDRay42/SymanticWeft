@@ -3,7 +3,7 @@ name = "semanticweft-node-api"
 version = "0.1.0"
 edition = "2021"
 description = "Request and response types for the SemanticWeft Node API (spec/node-api.md)."
-license = "MIT"
+license = "AGPL-3.0-only"
 
 [dependencies]
 semanticweft = { path = "../core" }

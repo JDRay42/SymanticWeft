@@ -3,7 +3,7 @@ name = "semanticweft-wasm"
 version = "0.1.0"
 edition = "2021"
 description = "WebAssembly bindings for the SemanticWeft core library."
-license = "MIT"
+license = "AGPL-3.0-only"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

@@ -3,7 +3,7 @@ name = "semanticweft"
 version = "0.1.0"
 edition = "2021"
 description = "Reference implementation of the SemanticWeft protocol — types, validation, graph traversal, and rendering."
-license = "MIT"
+license = "AGPL-3.0-only"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

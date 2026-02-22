@@ -3,7 +3,7 @@ name = "semanticweft-conformance"
 version = "0.1.0"
 edition = "2021"
 description = "End-to-end conformance test suite for the SemanticWeft node API."
-license = "MIT"
+license = "Apache-2.0"
 publish = false
 
 [lib]
