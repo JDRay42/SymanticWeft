@@ -85,7 +85,7 @@ pub async fn submit(
     State(state): State<AppState>,
     auth: OptionalAuth,
     Json(unit): Json<SemanticUnit>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Result<Response, AppError> {
     validate_unit(&unit).map_err(|e| AppError::UnprocessableEntity(e.to_string()))?;
     if unit.proof.is_some() {
         semanticweft::verify_proof(&unit).map_err(|e| AppError::BadRequest(e.to_string()))?;
@@ -104,7 +104,28 @@ pub async fn submit(
         }
     }
 
-    state.storage.put_unit(&unit).await?;
+    match state.storage.put_unit(&unit).await {
+        Ok(()) => {}
+        Err(StorageError::Conflict(_)) => {
+            // The spec (§5.1) requires that re-submission of a unit with the
+            // same `id` and identical content is idempotent (200 OK).
+            // Re-submission with different content is a true conflict (409).
+            let existing = state
+                .storage
+                .get_unit(&unit.id)
+                .await?
+                .ok_or_else(|| AppError::Internal("conflict on put_unit but unit not found".into()))?;
+            if existing == unit {
+                // Idempotent re-submission: return the stored unit, no fan-out.
+                return Ok((StatusCode::OK, Json(existing)).into_response());
+            }
+            return Err(AppError::Conflict(format!(
+                "unit {} already exists with different content",
+                unit.id
+            )));
+        }
+        Err(e) => return Err(AppError::from(e)),
+    }
 
     // Broadcast public units to live SSE subscribers.
     let unit_vis = unit.visibility.as_ref().unwrap_or(&Visibility::Public);
@@ -127,7 +148,7 @@ pub async fn submit(
         remote_fanout(client, unit_fanout, storage, node_did, node_api_base, signing_key).await;
     });
 
-    Ok((StatusCode::CREATED, Json(unit)))
+    Ok((StatusCode::CREATED, Json(unit)).into_response())
 }
 
 /// Deliver a submitted unit to the inboxes of eligible agents on this node.
