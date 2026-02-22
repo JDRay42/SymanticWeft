@@ -17,7 +17,8 @@
 //!   returns a `node_id` that doesn't match the announced `node_id` is rejected
 //!   (possible impersonation). Network failures are given benefit of the doubt.
 //! - **Reputation-based eviction.** When the list is full, the lowest-reputation
-//!   peer is evicted to make room, provided the new peer is not worse.
+//!   peer is evicted only if the new peer is strictly better. A newcomer with
+//!   equal reputation does not displace an incumbent.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -174,7 +175,7 @@ impl PeerDiscovery {
         if peers.len() >= self.max_peers {
             // list_peers returns highest-reputation first; worst is last.
             if let Some(worst) = peers.last() {
-                if worst.reputation <= candidate.reputation {
+                if candidate.reputation > worst.reputation {
                     let evict_id = worst.node_id.clone();
                     if let Err(e) = self.storage.remove_peer(&evict_id).await {
                         warn!("peer_discovery: eviction failed: {e}");
@@ -185,7 +186,8 @@ impl PeerDiscovery {
                         evict_id, worst.reputation
                     );
                 } else {
-                    // New peer is worse than the worst existing peer; skip it.
+                    // New peer is no better than the worst existing peer; skip it.
+                    // Equal reputation is not enough to displace an incumbent.
                     return;
                 }
             }

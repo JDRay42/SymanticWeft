@@ -6,6 +6,20 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Membership status of an agent registered on this node (ADR-0013).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentStatus {
+    /// Fully admitted member. May sponsor new applicants and participate
+    /// without restriction.
+    #[default]
+    Full,
+    /// Admitted on probation via the self-service apply endpoint. May
+    /// participate normally but cannot sponsor other applicants until their
+    /// contribution count reaches the node's configured threshold.
+    Probationary,
+}
+
 /// Persistent profile for a registered agent.
 ///
 /// Returned by `GET /v1/agents/{did}` and `POST /v1/agents/{did}` on success.
@@ -16,7 +30,9 @@ use serde::{Deserialize, Serialize};
 /// {
 ///   "did": "did:key:z6MkHaXXX",
 ///   "inbox_url": "https://node.example.com/v1/agents/did%3Akey%3Az6MkHaXXX/inbox",
-///   "display_name": "Researcher-7"
+///   "display_name": "Researcher-7",
+///   "status": "full",
+///   "contribution_count": 0
 /// }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -35,6 +51,17 @@ pub struct AgentProfile {
     /// OPTIONAL; required only when the node enforces signed delivery.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_key: Option<String>,
+
+    /// Membership status on this node. Defaults to `Full` for backward
+    /// compatibility with records that pre-date ADR-0013.
+    #[serde(default)]
+    pub status: AgentStatus,
+
+    /// Number of community contributions recorded for this agent.
+    /// A probationary agent graduates to `Full` when this reaches the node's
+    /// configured `probation_threshold`. Defaults to `0`.
+    #[serde(default)]
+    pub contribution_count: u32,
 }
 
 /// Request body for `POST /v1/agents/{did}` — register or update an agent.
@@ -58,6 +85,36 @@ pub struct RegisterRequest {
     /// to verify HTTP Signatures produced by this agent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_key: Option<String>,
+}
+
+/// Request body for `POST /v1/agents/{did}/apply` — self-service application
+/// for node membership (ADR-0013).
+///
+/// Applicants begin as `Probationary` regardless of whether a sponsor is
+/// provided. Full membership is granted by the operator directly (via
+/// `POST /v1/agents/{did}`) or automatically when the agent's contribution
+/// count reaches the node's configured threshold.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ApplyRequest {
+    /// The agent's decentralised identifier.
+    pub did: String,
+
+    /// The inbox URL the agent wants to advertise.
+    pub inbox_url: String,
+
+    /// Optional human-readable display name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+
+    /// Optional public key material.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+
+    /// DID of an existing `Full`-status member willing to vouch for this
+    /// applicant. An invalid or absent sponsor does not block admission; it
+    /// is recorded in the operator webhook notification only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sponsor_did: Option<String>,
 }
 
 /// Response body for `GET /v1/agents/{did}/inbox`.
@@ -110,10 +167,36 @@ mod tests {
             inbox_url: "https://node.example.com/v1/agents/did%3Akey%3Az6MkHaXXX/inbox".into(),
             display_name: None,
             public_key: None,
+            status: AgentStatus::Full,
+            contribution_count: 0,
         };
         let json = serde_json::to_string(&profile).unwrap();
         let back: AgentProfile = serde_json::from_str(&json).unwrap();
         assert_eq!(back, profile);
+    }
+
+    #[test]
+    fn agent_profile_status_serialises() {
+        let profile = AgentProfile {
+            did: "did:key:z6Mk".into(),
+            inbox_url: "https://example.com/inbox".into(),
+            display_name: None,
+            public_key: None,
+            status: AgentStatus::Probationary,
+            contribution_count: 3,
+        };
+        let json = serde_json::to_string(&profile).unwrap();
+        assert!(json.contains("\"status\":\"probationary\""));
+        assert!(json.contains("\"contribution_count\":3"));
+    }
+
+    #[test]
+    fn agent_profile_status_defaults_to_full_when_absent() {
+        // Pre-ADR-0013 JSON has no status field; should deserialise as Full.
+        let json = r#"{"did":"did:key:z6Mk","inbox_url":"https://example.com/inbox"}"#;
+        let profile: AgentProfile = serde_json::from_str(json).unwrap();
+        assert_eq!(profile.status, AgentStatus::Full);
+        assert_eq!(profile.contribution_count, 0);
     }
 
     #[test]
