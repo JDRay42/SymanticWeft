@@ -436,10 +436,13 @@ async fn remote_fanout(
     }
 }
 
-/// POST a unit to a remote agent inbox with an HTTP Signature, logging any failure.
+/// POST a unit to a remote agent inbox with an HTTP Signature.
 ///
-/// Failure notifications are delivered to the original author's local inbox
-/// (if they are registered here) via [`notify_author_of_failure`].
+/// Retries up to 3 times with exponential backoff (2 s, 4 s) on 5xx or
+/// network errors (spec §9.4 SHOULD). 4xx responses are considered permanent
+/// and are not retried. After all attempts are exhausted a failure notification
+/// is delivered to the original author's local inbox via
+/// [`notify_author_of_failure`].
 async fn push_to_inbox(
     client: &reqwest::Client,
     unit: &SemanticUnit,
@@ -464,45 +467,62 @@ async fn push_to_inbox(
         }
     };
 
-    let (date_val, sig_val) =
-        build_outbound_signature(signing_key, node_did, "post", &req_path, &req_host);
+    // §9.4 SHOULD retry with exponential backoff before giving up.
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut last_error = String::new();
 
-    match client
-        .post(inbox_url)
-        .header("date", &date_val)
-        .header("signature", &sig_val)
-        .header("host", &req_host)
-        .json(unit)
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => {
-            tracing::debug!("push_to_inbox: delivered unit {} to {inbox_url}", unit.id);
+    for attempt in 1..=MAX_ATTEMPTS {
+        // Regenerate the signature each attempt so the Date header stays fresh.
+        let (date_val, sig_val) =
+            build_outbound_signature(signing_key, node_did, "post", &req_path, &req_host);
+
+        match client
+            .post(inbox_url)
+            .header("date", &date_val)
+            .header("signature", &sig_val)
+            .header("host", &req_host)
+            .json(unit)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                tracing::debug!(
+                    "push_to_inbox: delivered unit {} to {inbox_url} (attempt {attempt})",
+                    unit.id
+                );
+                return;
+            }
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                last_error = format!("remote inbox returned HTTP {status}");
+                tracing::warn!(
+                    "push_to_inbox: {inbox_url} returned HTTP {status} — \
+                     attempt {attempt}/{MAX_ATTEMPTS}"
+                );
+                // 4xx = permanent client error; retrying won't help.
+                if status < 500 {
+                    break;
+                }
+            }
+            Err(e) => {
+                last_error = format!("delivery failed: {e}");
+                tracing::warn!(
+                    "push_to_inbox: delivery to {inbox_url} failed: {e} — \
+                     attempt {attempt}/{MAX_ATTEMPTS}"
+                );
+            }
         }
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            tracing::warn!("push_to_inbox: delivery to {inbox_url} returned HTTP {status}");
-            notify_author_of_failure(
-                storage,
-                node_did,
-                unit,
-                inbox_url,
-                &format!("remote inbox returned HTTP {status}"),
-            )
-            .await;
-        }
-        Err(e) => {
-            tracing::warn!("push_to_inbox: delivery to {inbox_url} failed: {e}");
-            notify_author_of_failure(
-                storage,
-                node_did,
-                unit,
-                inbox_url,
-                &format!("delivery failed: {e}"),
-            )
-            .await;
+
+        if attempt < MAX_ATTEMPTS {
+            // Backoff: 2 s after attempt 1, 4 s after attempt 2.
+            tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
         }
     }
+
+    tracing::warn!(
+        "push_to_inbox: giving up on {inbox_url} after {MAX_ATTEMPTS} attempts: {last_error}"
+    );
+    notify_author_of_failure(storage, node_did, unit, inbox_url, &last_error).await;
 }
 
 /// Deliver a delivery-failure notification to the original author's local inbox.
@@ -566,12 +586,17 @@ async fn notify_author_of_failure(
 
 /// `GET /v1/units/{id}` — retrieve a unit by its UUIDv7 ID.
 ///
+/// Returns 400 if `{id}` is not a valid UUIDv7 (spec §5.2 SHOULD).
 /// Visibility is enforced per auth state (see module docs).
 pub async fn get_by_id(
     State(state): State<AppState>,
     Path(id): Path<String>,
     auth: OptionalAuth,
 ) -> Result<Json<SemanticUnit>, AppError> {
+    // §5.2: SHOULD return 400 when the id is not a valid UUIDv7.
+    uuid::Uuid::parse_str(&id)
+        .map_err(|_| AppError::BadRequest(format!("{id:?} is not a valid UUID")))?;
+
     let unit = state
         .storage
         .get_unit(&id)

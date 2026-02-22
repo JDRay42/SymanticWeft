@@ -31,6 +31,8 @@
 //! | `forward_references_are_allowed` | §5.1 forward refs |
 //! | `list_units_pagination` | §4.3 pagination |
 //! | `fetch_unknown_unit_returns_404` | §5.2 not found |
+//! | `fetch_unit_with_invalid_uuid_returns_400` | §5.2 invalid UUID |
+//! | `list_units_filter_by_multiple_types` | §5.3 multi-type filter |
 //! | `subgraph_traversal` | §5.4 subgraph |
 //! | `subgraph_respects_depth_limit` | §5.4 depth param |
 //! | `sync_json_returns_public_units` | §5.5 sync |
@@ -314,6 +316,55 @@ async fn fetch_unknown_unit_returns_404() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
+}
+
+/// Spec §5.2 SHOULD: requesting a unit whose id is not a valid UUID MUST
+/// return 400 Bad Request (not 404) so callers can distinguish malformed
+/// requests from genuinely missing units.
+#[tokio::test]
+async fn fetch_unit_with_invalid_uuid_returns_400() {
+    let (base, _storage) = spawn_node().await;
+    let client = make_client();
+
+    let resp = client
+        .get(format!("{base}/v1/units/not-a-uuid"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "non-UUID id should return 400, not 404");
+}
+
+/// §5.3: `?type=` accepts comma-separated values to filter by multiple types.
+#[tokio::test]
+async fn list_units_filter_by_multiple_types() {
+    let (base, _storage) = spawn_node().await;
+    let client = make_client();
+
+    let assertion = public_unit();
+    let inference = inference_unit();
+    let question = SemanticUnit::new(UnitType::Question, "A question?", "did:key:z6MkConformance");
+
+    client.post(format!("{base}/v1/units")).json(&assertion).send().await.unwrap();
+    client.post(format!("{base}/v1/units")).json(&inference).send().await.unwrap();
+    client.post(format!("{base}/v1/units")).json(&question).send().await.unwrap();
+
+    // Comma-separated filter should return assertion + inference but not question.
+    let resp = client
+        .get(format!("{base}/v1/units?type=assertion,inference"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    let units = body["units"].as_array().unwrap();
+    assert_eq!(units.len(), 2, "should return assertion and inference, not question");
+    assert!(
+        units.iter().all(|u| {
+            let t = u["type"].as_str().unwrap();
+            t == "assertion" || t == "inference"
+        }),
+        "all returned units must be assertion or inference"
+    );
 }
 
 #[tokio::test]

@@ -38,6 +38,7 @@ httpdate = "1"
 hex = "0.4"
 
 urlencoding = "2"
+uuid = { version = "1", features = ["v7"] }
 
 tokio-stream = { version = "0.1", features = ["sync"] }
 
