@@ -40,6 +40,12 @@
 //! | `delete_agent_wrong_did_returns_403` | §8 DELETE agent auth |
 //! | `follow_and_list` | §9 follows |
 //! | `unfollow_removes_relationship` | §9 follows |
+//! | `follow_unauthenticated_returns_401` | §9 follows auth |
+//! | `follow_wrong_did_returns_403` | §9 follows auth |
+//! | `unfollow_unauthenticated_returns_401` | §9 follows auth |
+//! | `unfollow_wrong_did_returns_403` | §9 follows auth |
+//! | `update_peer_reputation_returns_200` | §7 reputation |
+//! | `update_peer_reputation_unknown_returns_404` | §7 reputation |
 
 use semanticweft::{SemanticUnit, UnitType};
 use semanticweft_conformance::spawn_node;
@@ -745,4 +751,154 @@ async fn unfollow_removes_relationship() {
         !follows.iter().any(|f| f["did"].as_str() == Some(followee_did.as_str())),
         "followee should be removed from following list after unfollow"
     );
+}
+
+#[tokio::test]
+async fn follow_unauthenticated_returns_401() {
+    let (base, storage) = spawn_node().await;
+    let client = make_client();
+    let (_, did, pubkey) = make_agent_key();
+    let addr = base.strip_prefix("http://").unwrap_or(&base);
+    seed_agent(&storage, &did, &format!("{base}/v1/agents/{did}/inbox"), &pubkey).await;
+
+    // No Signature header — should fail auth.
+    let path = format!("/v1/agents/{did}/following");
+    let resp = client
+        .post(format!("{base}{path}"))
+        .json(&serde_json::json!({ "follower_did": did, "target_did": "did:key:zTarget" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401, "unauthenticated follow should be 401, addr={addr}");
+}
+
+#[tokio::test]
+async fn follow_wrong_did_returns_403() {
+    let (base, storage) = spawn_node().await;
+    let client = make_client();
+    let addr = base.strip_prefix("http://").unwrap_or(&base);
+
+    let (key_a, did_a, pubkey_a) = make_agent_key();
+    let (_, did_b, pubkey_b) = make_agent_key();
+    seed_agent(&storage, &did_a, &format!("{base}/v1/agents/{did_a}/inbox"), &pubkey_a).await;
+    seed_agent(&storage, &did_b, &format!("{base}/v1/agents/{did_b}/inbox"), &pubkey_b).await;
+
+    // Agent A signs a follow request for Agent B's path.
+    let path = format!("/v1/agents/{did_b}/following");
+    let (date, sig) = http_sig(&key_a, &did_a, "post", &path, addr);
+
+    let resp = client
+        .post(format!("{base}{path}"))
+        .header("host", addr)
+        .header("date", &date)
+        .header("signature", &sig)
+        .json(&serde_json::json!({ "follower_did": did_b, "target_did": "did:key:zTarget" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403, "following on behalf of another agent should be 403");
+}
+
+#[tokio::test]
+async fn unfollow_unauthenticated_returns_401() {
+    let (base, storage) = spawn_node().await;
+    let client = make_client();
+    let (_, did, pubkey) = make_agent_key();
+    let addr = base.strip_prefix("http://").unwrap_or(&base);
+    seed_agent(&storage, &did, &format!("{base}/v1/agents/{did}/inbox"), &pubkey).await;
+
+    let path = format!("/v1/agents/{did}/following/did:key:zTarget");
+    let resp = client
+        .delete(format!("{base}{path}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401, "unauthenticated unfollow should be 401, addr={addr}");
+}
+
+#[tokio::test]
+async fn unfollow_wrong_did_returns_403() {
+    let (base, storage) = spawn_node().await;
+    let client = make_client();
+    let addr = base.strip_prefix("http://").unwrap_or(&base);
+
+    let (key_a, did_a, pubkey_a) = make_agent_key();
+    let (_, did_b, _) = make_agent_key();
+    seed_agent(&storage, &did_a, &format!("{base}/v1/agents/{did_a}/inbox"), &pubkey_a).await;
+
+    // Agent A signs a delete request for Agent B's following path.
+    let path = format!("/v1/agents/{did_b}/following/did:key:zTarget");
+    let (date, sig) = http_sig(&key_a, &did_a, "delete", &path, addr);
+
+    let resp = client
+        .delete(format!("{base}{path}"))
+        .header("host", addr)
+        .header("date", &date)
+        .header("signature", &sig)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403, "unfollowing on behalf of another agent should be 403");
+}
+
+// ---------------------------------------------------------------------------
+// Peers — reputation update (§7, ADR-0008)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn update_peer_reputation_returns_200() {
+    let (base, _storage) = spawn_node().await;
+    let client = make_client();
+
+    // Register a peer first.
+    let peer_id = "did:key:z6MkRepPeer";
+    let resp = client
+        .post(format!("{base}/v1/peers"))
+        .json(&serde_json::json!({
+            "node_id": peer_id,
+            "api_base": "https://peer.example.com/v1"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // Update its reputation.
+    let resp = client
+        .patch(format!("{base}/v1/peers/{peer_id}"))
+        .json(&serde_json::json!({ "reputation": 0.85 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "PATCH reputation should return 200");
+
+    let body: Value = resp.json().await.unwrap();
+    let rep = body["reputation"].as_f64().unwrap();
+    assert!((rep - 0.85).abs() < 1e-5, "expected 0.85, got {rep}");
+    assert_eq!(body["node_id"].as_str(), Some(peer_id));
+
+    // Confirm it's reflected in the peer list.
+    let resp = client
+        .get(format!("{base}/v1/peers"))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = resp.json().await.unwrap();
+    let peers = body["peers"].as_array().unwrap();
+    let found = peers.iter().find(|p| p["node_id"].as_str() == Some(peer_id)).unwrap();
+    assert!((found["reputation"].as_f64().unwrap() - 0.85).abs() < 1e-5);
+}
+
+#[tokio::test]
+async fn update_peer_reputation_unknown_returns_404() {
+    let (base, _storage) = spawn_node().await;
+    let client = make_client();
+
+    let resp = client
+        .patch(format!("{base}/v1/peers/did:key:zNotRegistered"))
+        .json(&serde_json::json!({ "reputation": 0.5 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404, "unknown peer should return 404");
 }
