@@ -538,6 +538,7 @@ mod tests {
             max_peers: 100,
             public_key: None,
             rate_limit_per_minute: 0, // disabled in tests
+            reputation_vote_sigma_factor: 1.0,
         };
         // Use a dummy signing key for tests
         let node_signing_key = Arc::new(SigningKey::generate(&mut OsRng));

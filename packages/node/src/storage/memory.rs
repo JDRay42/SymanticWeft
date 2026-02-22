@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use semanticweft::{SemanticUnit, Visibility};
 use semanticweft_node_api::{AgentProfile, PeerInfo};
 
-use super::{Storage, StorageError, UnitFilter};
+use super::{ReputationStats, Storage, StorageError, UnitFilter};
 
 // ---------------------------------------------------------------------------
 // Internal state
@@ -291,6 +291,25 @@ impl Storage for MemoryStorage {
                 .then_with(|| a.node_id.cmp(&b.node_id))
         });
         Ok(peers)
+    }
+
+    async fn peer_reputation_stats(&self) -> Result<ReputationStats, StorageError> {
+        let inner = self.inner.read().unwrap();
+        let count = inner.peers.len();
+        if count == 0 {
+            return Ok(ReputationStats { mean: 0.0, stddev: 0.0 });
+        }
+        let sum: f64 = inner.peers.values().map(|p| p.reputation as f64).sum();
+        let sum_sq: f64 = inner.peers.values().map(|p| (p.reputation as f64).powi(2)).sum();
+        let n = count as f64;
+        let mean = sum / n;
+        // Population stddev: sqrt(E[x²] - E[x]²), clamped to avoid negative due to float imprecision.
+        let variance = (sum_sq / n - mean * mean).max(0.0);
+        let stddev = variance.sqrt();
+        Ok(ReputationStats {
+            mean: mean as f32,
+            stddev: stddev as f32,
+        })
     }
 
     // --- Node configuration -------------------------------------------------

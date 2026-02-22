@@ -49,7 +49,7 @@ This document maps the full development arc of the SemanticWeft protocol — fro
 - [x] **Agent identity model** — `did:key` (Ed25519) for agents and nodes; self-contained, no central registry required (ADR-0001)
 - [x] **Unit signing** — Ed25519 signatures over JCS-canonicalised unit JSON; `proof` field in unit schema
 - [x] **Verification** — public key embedded in `did:key`; verification is local and requires no network lookup
-- [x] **Trust levels** — peer reputation system tracks node reliability scores (ADR-0008)
+- [x] **Trust levels** — peer reputation system tracks node reliability scores; community-gated voting with statistical threshold and weighted EigenTrust-style updates implemented (ADR-0008)
 - [x] **Revocation** — units are immutable; a `challenge` unit with `rebuts` reference is the protocol-native retraction mechanism
 
 **Decisions made:** `did:key` chosen for self-containment (ADR-0001); Ed25519 chosen for performance and widespread support (ADR-0002); trust expressed via peer reputation scores, not in-band unit fields (ADR-0003).

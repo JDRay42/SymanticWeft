@@ -21,7 +21,7 @@ use rusqlite::{params, Connection};
 use semanticweft::{SemanticUnit, Visibility};
 use semanticweft_node_api::{AgentProfile, PeerInfo};
 
-use super::{Storage, StorageError, UnitFilter};
+use super::{ReputationStats, Storage, StorageError, UnitFilter};
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -663,6 +663,40 @@ impl Storage for SqliteStorage {
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(map_err)?;
             Ok(result)
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("task join error: {e}")))?
+    }
+
+    async fn peer_reputation_stats(&self) -> Result<ReputationStats, StorageError> {
+        let conn = Arc::clone(&self.conn);
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            // AVG(reputation) and AVG(reputation * reputation) let us derive stddev without
+            // loading all rows: stddev = sqrt(max(0, avg_sq - avg²)).
+            let result = conn.query_row(
+                "SELECT COUNT(*), AVG(reputation), AVG(reputation * reputation) FROM peers",
+                [],
+                |row| {
+                    let count: i64 = row.get(0)?;
+                    let avg: Option<f64> = row.get(1)?;
+                    let avg_sq: Option<f64> = row.get(2)?;
+                    Ok((count, avg, avg_sq))
+                },
+            );
+            match result {
+                Ok((0, _, _)) | Ok((_, None, _)) => Ok(ReputationStats { mean: 0.0, stddev: 0.0 }),
+                Ok((_, Some(mean), Some(avg_sq))) => {
+                    let variance = (avg_sq - mean * mean).max(0.0);
+                    Ok(ReputationStats {
+                        mean: mean as f32,
+                        stddev: variance.sqrt() as f32,
+                    })
+                }
+                Ok(_) => Ok(ReputationStats { mean: 0.0, stddev: 0.0 }),
+                Err(e) => Err(map_err(e)),
+            }
         })
         .await
         .map_err(|e| StorageError::Internal(format!("task join error: {e}")))?
