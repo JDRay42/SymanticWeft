@@ -133,12 +133,10 @@ X-Node-ID: did:key:z6MkMyOwnNode
 The update is **community-gated and weighted**:
 
 - The `X-Node-ID` header identifies the caller. Only nodes already in the local peer list may submit updates — outsiders are rejected with `403`.
-- Within the community, only peers whose reputation is at or above `max(0.0, mean − σ × stddev)` across all local peers may vote. When all peers share the same reputation (as in a brand-new community), stddev is 0 and the threshold equals the mean — so every peer can vote. As the community matures and heterogeneity develops, outliers at the bottom lose their vote.
+- Within the community, only peers whose reputation is at or above `max(0.0, mean − σ × stddev)` across all local peers may vote. When all peers share the same reputation (as in a brand-new community), stddev is 0 and the threshold equals the mean — so every peer can vote. As the community matures and heterogeneity develops, outliers at the bottom lose their vote. The σ factor is configurable via `SWEFT_REPUTATION_VOTE_SIGMA_FACTOR` (default `1.0`).
 - Votes are blended into the current value using the caller's reputation as weight: `new = current × (1 − weight) + proposed × weight`. A high-reputation peer has proportionally more influence.
 
 **A node cannot update its own reputation.** Submitting a `PATCH` where the target DID matches the receiving node's own identity returns `403 Forbidden`.
-
-When a node's peer table is full and a new peer is discovered, the lowest-reputation peer is evicted to make room. The threshold factor is configurable via `SWEFT_REPUTATION_VOTE_SIGMA_FACTOR` (default `1.0`).
 
 See [ADR-0008](docs/decisions/0008-peer-reputation-system.md) for the full design, including the planned weighted cross-node reconciliation algorithm.
 
