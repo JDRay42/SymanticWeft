@@ -19,22 +19,31 @@ use axum::{
 use semanticweft_node_api::{FollowEntry, FollowListResponse, FollowRequest};
 
 use crate::error::AppError;
+use crate::middleware::auth::RequireAuth;
 
 use super::AppState;
 
 /// `POST /v1/agents/{did}/following` — follow a target agent.
 ///
 /// Returns 400 if `follower_did` in the body does not match the `{did}` path
-/// parameter. Returns 404 if the follower agent is not registered on this node.
-/// Returns 204 on success.
+/// parameter. Returns 401 if unauthenticated. Returns 403 if the authenticated
+/// DID does not match `{did}`. Returns 404 if the follower agent is not
+/// registered on this node. Returns 204 on success.
 pub async fn follow(
     State(state): State<AppState>,
     Path(did): Path<String>,
+    auth: RequireAuth,
     Json(req): Json<FollowRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if req.follower_did != did {
         return Err(AppError::BadRequest(
             "follower_did in body must match the {did} path parameter".into(),
+        ));
+    }
+
+    if auth.did != did {
+        return Err(AppError::Forbidden(
+            "cannot follow on behalf of a different agent".into(),
         ));
     }
 
@@ -55,11 +64,19 @@ pub async fn follow(
 
 /// `DELETE /v1/agents/{did}/following/{target}` — unfollow a target agent.
 ///
-/// Idempotent: returns 204 even if the relationship did not exist.
+/// Returns 401 if unauthenticated. Returns 403 if the authenticated DID does
+/// not match `{did}`. Idempotent: returns 204 even if the relationship did
+/// not exist.
 pub async fn unfollow(
     State(state): State<AppState>,
     Path((did, target)): Path<(String, String)>,
+    auth: RequireAuth,
 ) -> Result<impl IntoResponse, AppError> {
+    if auth.did != did {
+        return Err(AppError::Forbidden(
+            "cannot unfollow on behalf of a different agent".into(),
+        ));
+    }
     state.storage.remove_follow(&did, &target).await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -138,6 +138,12 @@ impl Storage for MemoryStorage {
                     if !filter.visibilities.contains(vis) {
                         return false;
                     }
+                    // For network units, further restrict to authors the caller follows.
+                    if *vis == Visibility::Network && !filter.network_for_authors.is_empty() {
+                        if !filter.network_for_authors.contains(&u.author) {
+                            return false;
+                        }
+                    }
                 }
                 true
             })
@@ -257,6 +263,21 @@ impl Storage for MemoryStorage {
         let mut inner = self.inner.write().unwrap();
         inner.peers.remove(node_id);
         Ok(())
+    }
+
+    async fn update_peer_reputation(
+        &self,
+        node_id: &str,
+        reputation: f32,
+    ) -> Result<(), StorageError> {
+        let mut inner = self.inner.write().unwrap();
+        match inner.peers.get_mut(node_id) {
+            Some(peer) => {
+                peer.reputation = reputation.clamp(0.0, 1.0);
+                Ok(())
+            }
+            None => Err(StorageError::NotFound),
+        }
     }
 
     async fn list_peers(&self) -> Result<Vec<PeerInfo>, StorageError> {

@@ -79,6 +79,13 @@ pub struct UnitFilter {
     /// - Authenticated follower of author: `[Public, Network]`
     /// - Agent listed in `audience`: `[Public, Network, Limited]`
     pub visibilities: Vec<Visibility>,
+
+    /// When non-empty, `network` units are further restricted to only those
+    /// whose `author` is in this list. Used by `GET /v1/units` to limit
+    /// network-visibility results to authors the caller actually follows.
+    ///
+    /// Has no effect when `Network` is not in `visibilities` or when empty.
+    pub network_for_authors: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -158,6 +165,16 @@ pub trait Storage: Send + Sync + 'static {
     /// Remove a peer by `node_id`. Used by the eviction policy when the peer
     /// list reaches `SWEFT_MAX_PEERS`. No-op if the peer is not known.
     async fn remove_peer(&self, node_id: &str) -> Result<(), StorageError>;
+
+    /// Update the reputation score for a known peer.
+    ///
+    /// `reputation` must be in `[0.0, 1.0]`. Returns [`StorageError::NotFound`]
+    /// if no peer with `node_id` exists.
+    async fn update_peer_reputation(
+        &self,
+        node_id: &str,
+        reputation: f32,
+    ) -> Result<(), StorageError>;
 
     /// Return all known peers, ordered by reputation descending (best first).
     async fn list_peers(&self) -> Result<Vec<PeerInfo>, StorageError>;

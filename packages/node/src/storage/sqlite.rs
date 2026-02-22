@@ -321,6 +321,20 @@ impl Storage for SqliteStorage {
                 for v in &filter.visibilities {
                     params_vec.push(SqlParam::Text(v.to_string()));
                 }
+
+                // For network units, restrict to followed authors when the
+                // caller's follow list is known.
+                if !filter.network_for_authors.is_empty() {
+                    let author_placeholders: Vec<&str> =
+                        filter.network_for_authors.iter().map(|_| "?").collect();
+                    sql.push_str(&format!(
+                        " AND (visibility != 'network' OR author IN ({}))",
+                        author_placeholders.join(",")
+                    ));
+                    for a in &filter.network_for_authors {
+                        params_vec.push(SqlParam::Text(a.clone()));
+                    }
+                }
             }
 
             sql.push_str(" ORDER BY id ASC LIMIT ?");
@@ -593,6 +607,33 @@ impl Storage for SqliteStorage {
             conn.execute("DELETE FROM peers WHERE node_id = ?1", params![node_id])
                 .map_err(map_err)?;
             Ok(())
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("task join error: {e}")))?
+    }
+
+    async fn update_peer_reputation(
+        &self,
+        node_id: &str,
+        reputation: f32,
+    ) -> Result<(), StorageError> {
+        let conn = Arc::clone(&self.conn);
+        let node_id = node_id.to_string();
+        let reputation = reputation.clamp(0.0, 1.0) as f64;
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let rows = conn
+                .execute(
+                    "UPDATE peers SET reputation = ?1 WHERE node_id = ?2",
+                    params![reputation, node_id],
+                )
+                .map_err(map_err)?;
+            if rows == 0 {
+                Err(StorageError::NotFound)
+            } else {
+                Ok(())
+            }
         })
         .await
         .map_err(|e| StorageError::Internal(format!("task join error: {e}")))?

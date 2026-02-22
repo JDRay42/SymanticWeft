@@ -76,6 +76,16 @@ pub struct PeersResponse {
     pub peers: Vec<PeerInfo>,
 }
 
+/// Request body for `PATCH /v1/peers/{node_id}` — update a peer's reputation.
+///
+/// `reputation` must be in `[0.0, 1.0]`. Values outside this range are clamped
+/// by the server. Returns 404 if the peer is not known to this node.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReputationUpdate {
+    /// New reputation score for the peer, in `[0.0, 1.0]`.
+    pub reputation: f32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
