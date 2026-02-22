@@ -118,3 +118,219 @@ pub async fn list_followers(
         next_cursor: None,
     }))
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::{body::Body, http::{Request, StatusCode}};
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+    use semanticweft_node_api::AgentProfile;
+    use tower::ServiceExt;
+
+    use crate::{
+        config::NodeConfig,
+        middleware::auth::build_outbound_signature,
+        router::build_router,
+        storage::{memory::MemoryStorage, Storage},
+    };
+
+    fn make_key_and_did() -> (SigningKey, String) {
+        let key = SigningKey::generate(&mut OsRng);
+        let pub_bytes = key.verifying_key().to_bytes();
+        let mut mc = vec![0xed_u8, 0x01];
+        mc.extend_from_slice(&pub_bytes);
+        let did = format!("did:key:z{}", bs58::encode(&mc).into_string());
+        (key, did)
+    }
+
+    fn build_app(storage: Arc<dyn Storage>) -> axum::Router {
+        let config = NodeConfig {
+            node_id: "did:key:zNode".into(),
+            name: None,
+            api_base: "http://localhost/v1".into(),
+            contact: None,
+            bind_addr: "127.0.0.1:3000".parse().unwrap(),
+            db_path: None,
+            sync_interval_secs: 60,
+            bootstrap_peers: vec![],
+            max_peers: 100,
+            public_key: None,
+            rate_limit_per_minute: 0,
+        };
+        let signing_key = Arc::new(SigningKey::generate(&mut OsRng));
+        build_router(storage, config, signing_key).0
+    }
+
+    async fn seed(storage: &Arc<dyn Storage>, key: &SigningKey) -> String {
+        let pub_bytes = key.verifying_key().to_bytes();
+        let mut mc = vec![0xed_u8, 0x01];
+        mc.extend_from_slice(&pub_bytes);
+        let encoded = bs58::encode(&mc).into_string();
+        let did = format!("did:key:z{encoded}");
+        storage
+            .put_agent(&AgentProfile {
+                did: did.clone(),
+                inbox_url: format!("http://localhost/v1/agents/{did}/inbox"),
+                display_name: None,
+                public_key: Some(format!("z{encoded}")),
+            })
+            .await
+            .unwrap();
+        did
+    }
+
+    // -----------------------------------------------------------------------
+    // POST /v1/agents/{did}/following
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn follow_unauthenticated_returns_401() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let (_, did) = make_key_and_did();
+        let path = format!("/v1/agents/{did}/following");
+
+        let req = Request::builder()
+            .method("POST")
+            .uri(&path)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "follower_did": did, "target_did": "did:key:zTarget" })
+                    .to_string(),
+            ))
+            .unwrap();
+
+        let resp = build_app(storage).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn follow_wrong_did_returns_403() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let (key_a, did_a) = make_key_and_did();
+        let (_, did_b) = make_key_and_did();
+        seed(&storage, &key_a).await;
+
+        // Agent A tries to follow on behalf of Agent B.
+        let path = format!("/v1/agents/{did_b}/following");
+        let (date, sig) = build_outbound_signature(&key_a, &did_a, "post", &path, "localhost");
+
+        let req = Request::builder()
+            .method("POST")
+            .uri(&path)
+            .header("content-type", "application/json")
+            .header("host", "localhost")
+            .header("date", &date)
+            .header("signature", &sig)
+            .body(Body::from(
+                serde_json::json!({ "follower_did": did_b, "target_did": "did:key:zTarget" })
+                    .to_string(),
+            ))
+            .unwrap();
+
+        let resp = build_app(storage).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn follow_success_returns_204() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let (key, did) = make_key_and_did();
+        seed(&storage, &key).await;
+
+        let path = format!("/v1/agents/{did}/following");
+        let (date, sig) = build_outbound_signature(&key, &did, "post", &path, "localhost");
+
+        let req = Request::builder()
+            .method("POST")
+            .uri(&path)
+            .header("content-type", "application/json")
+            .header("host", "localhost")
+            .header("date", &date)
+            .header("signature", &sig)
+            .body(Body::from(
+                serde_json::json!({ "follower_did": did, "target_did": "did:key:zTarget" })
+                    .to_string(),
+            ))
+            .unwrap();
+
+        let resp = build_app(storage).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    }
+
+    // -----------------------------------------------------------------------
+    // DELETE /v1/agents/{did}/following/{target}
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn unfollow_unauthenticated_returns_401() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let (_, did) = make_key_and_did();
+        let path = format!("/v1/agents/{did}/following/did:key:zTarget");
+
+        let req = Request::builder()
+            .method("DELETE")
+            .uri(&path)
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = build_app(storage).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn unfollow_wrong_did_returns_403() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let (key_a, did_a) = make_key_and_did();
+        let (_, did_b) = make_key_and_did();
+        seed(&storage, &key_a).await;
+
+        // Agent A tries to unfollow on behalf of Agent B.
+        let path = format!("/v1/agents/{did_b}/following/did:key:zTarget");
+        let (date, sig) = build_outbound_signature(&key_a, &did_a, "delete", &path, "localhost");
+
+        let req = Request::builder()
+            .method("DELETE")
+            .uri(&path)
+            .header("host", "localhost")
+            .header("date", &date)
+            .header("signature", &sig)
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = build_app(storage).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn unfollow_success_returns_204() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let (key, did) = make_key_and_did();
+        seed(&storage, &key).await;
+        // Pre-load a follow relationship.
+        storage.add_follow(&did, "did:key:zTarget").await.unwrap();
+
+        let path = format!("/v1/agents/{did}/following/did:key:zTarget");
+        let (date, sig) = build_outbound_signature(&key, &did, "delete", &path, "localhost");
+
+        let req = Request::builder()
+            .method("DELETE")
+            .uri(&path)
+            .header("host", "localhost")
+            .header("date", &date)
+            .header("signature", &sig)
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = build_app(storage.clone()).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // Relationship must be gone.
+        assert!(!storage.is_following(&did, "did:key:zTarget").await.unwrap());
+    }
+}
