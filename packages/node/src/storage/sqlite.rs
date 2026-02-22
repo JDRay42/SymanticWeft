@@ -119,16 +119,6 @@ impl SqliteStorage {
         })
     }
 
-    /// Open an in-memory SQLite database (data is lost when dropped).
-    pub fn open_in_memory() -> Result<Self, rusqlite::Error> {
-        let conn = Connection::open_in_memory()?;
-        conn.execute_batch(SCHEMA)?;
-        // In-memory DBs are always fresh; no migration needed.
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
-    }
-
     /// Apply additive migrations for existing databases that pre-date schema
     /// additions. Each `ALTER TABLE` is attempted and the error for "duplicate
     /// column name" is swallowed — this is intentional and safe.

@@ -108,10 +108,7 @@ where
 ///
 /// Returns 401 if the `Signature` header is absent, the `did:key` is malformed,
 /// or the signature does not verify.
-pub struct NodeAuth {
-    /// The node DID extracted from `keyId` in the `Signature` header.
-    pub node_did: String,
-}
+pub struct NodeAuth;
 
 impl<S> FromRequestParts<S> for NodeAuth
 where
@@ -124,9 +121,8 @@ where
         _state: &S,
     ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
         async move {
-            let node_did = verify_node_signature(parts)
-                .map_err(AuthError)?;
-            Ok(NodeAuth { node_did })
+            verify_node_signature(parts).map_err(AuthError)?;
+            Ok(NodeAuth)
         }
     }
 }
@@ -312,7 +308,7 @@ async fn verify_http_signature(
 // Parsed Signature header
 // ---------------------------------------------------------------------------
 
-struct ParsedSignature {
+pub(crate) struct ParsedSignature {
     key_id: String,
     algorithm: String,
     headers: Vec<String>,
