@@ -1,6 +1,8 @@
 //! Peer management handlers — `GET /v1/peers`, `POST /v1/peers`, and
 //! `PATCH /v1/peers/{node_id}` (spec §7, ADR-0008).
 
+use std::sync::Arc;
+
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -9,7 +11,7 @@ use axum::{
 };
 use semanticweft_node_api::{PeerInfo, PeersResponse, ReputationUpdate};
 
-use crate::error::AppError;
+use crate::{error::AppError, storage::Storage};
 
 use super::AppState;
 
@@ -21,7 +23,10 @@ pub async fn list(State(state): State<AppState>) -> Result<Json<PeersResponse>, 
 
 /// `POST /v1/peers` — register a new peer or update its `api_base`.
 ///
-/// Returns 201 with the stored peer record.
+/// Stores the peer immediately and returns 200, then spawns a background task
+/// to verify reachability via `/.well-known/semanticweft` (spec §7.2 SHOULD).
+/// A successful verification (with a matching `node_id`) nudges reputation up;
+/// an unreachable or mismatched peer nudges reputation down.
 pub async fn add(
     State(state): State<AppState>,
     Json(peer): Json<PeerInfo>,
@@ -32,7 +37,83 @@ pub async fn add(
         ));
     }
     state.storage.add_peer(&peer).await?;
-    Ok((StatusCode::CREATED, Json(peer)))
+
+    // §7.2 SHOULD: verify reachability asynchronously so the endpoint stays
+    // fast. The check updates last_seen / reputation in the background.
+    tokio::spawn(verify_peer_reachability(
+        state.http_client.clone(),
+        Arc::clone(&state.storage),
+        peer.node_id.clone(),
+        peer.api_base.clone(),
+    ));
+
+    Ok((StatusCode::OK, Json(peer)))
+}
+
+/// Fetch `/.well-known/semanticweft` from the peer and update its reputation
+/// based on reachability and whether its declared `node_id` matches.
+async fn verify_peer_reachability(
+    client: reqwest::Client,
+    storage: Arc<dyn Storage>,
+    node_id: String,
+    api_base: String,
+) {
+    // Derive the well-known URL from api_base (strip path, keep scheme+host).
+    let well_known = match reqwest::Url::parse(&api_base) {
+        Ok(u) => {
+            let scheme = u.scheme();
+            let host = match u.host_str() {
+                Some(h) => h,
+                None => {
+                    tracing::warn!("verify_peer: cannot extract host from {api_base}");
+                    return;
+                }
+            };
+            let port_str = u.port().map(|p| format!(":{p}")).unwrap_or_default();
+            format!("{scheme}://{host}{port_str}/.well-known/semanticweft")
+        }
+        Err(_) => {
+            tracing::warn!("verify_peer: malformed api_base URL: {api_base}");
+            return;
+        }
+    };
+
+    match client.get(&well_known).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            let id_matches = resp
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|v| v.get("node_id")?.as_str().map(|s| s == node_id))
+                .unwrap_or(false);
+
+            if id_matches {
+                tracing::debug!("verify_peer: {node_id} reachable, node_id confirmed");
+                // Nudge reputation toward 0.55 to reward a successful verification.
+                let _ = storage.update_peer_reputation(&node_id, 0.55).await;
+            } else {
+                tracing::warn!(
+                    "verify_peer: {node_id} reachable at {api_base} \
+                     but node_id in discovery document does not match"
+                );
+                // Mismatched identity is a stronger signal of misconfiguration.
+                let _ = storage.update_peer_reputation(&node_id, 0.3).await;
+            }
+        }
+        Ok(resp) => {
+            // A non-success HTTP status (e.g. 404, 500) is a transient or
+            // configuration error — do not penalise reputation, as an explicit
+            // PATCH may already have set a considered value.
+            tracing::warn!(
+                "verify_peer: {node_id} returned HTTP {} for {well_known}",
+                resp.status()
+            );
+        }
+        Err(e) => {
+            // Network errors are transient; leave reputation unchanged.
+            tracing::warn!("verify_peer: {node_id} unreachable at {api_base}: {e}");
+        }
+    }
 }
 
 /// `PATCH /v1/peers/{node_id}` — update a peer's reputation score.

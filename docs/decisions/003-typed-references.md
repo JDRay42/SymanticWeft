@@ -35,17 +35,17 @@ Options considered:
 
 **Optionally typed references were rejected** because they produce inconsistent graphs. If some references carry `rel` and others don't, consumers must handle the missing case and lose the guarantee that every edge is interpretable.
 
-**The five relationship types cover the essential cases:**
+**The five semantic relationship types cover the essential cases:**
 - `supports` and `rebuts` are the core epistemic operations (agreement and disagreement)
 - `derives-from` makes inference chains explicit
 - `questions` allows a unit to express targeted doubt about another
 - `refines` supports hierarchical knowledge without creating a new "parent/child" mechanism
 
-Additional `rel` values MAY be added via the extension mechanism (ADR-004) using namespaced values. The core five are expected to cover the vast majority of cases.
+A sixth type, `notifies`, was added during implementation for protocol-level system notifications (e.g., fan-out delivery failures reported back to an author's inbox). It is distinct from the five semantic types: `notifies` is used by nodes, not by agents constructing knowledge-graph units. Extensions that need additional *semantic* relationship types must use namespaced rel values (ADR-004).
 
 ## Consequences
 
 - Every reference requires a `rel` value; plain id-only references are not valid.
 - Consumers can traverse the graph by relationship type without inspecting unit content.
-- The relationship type set is closed at the protocol level; extensions must use namespaced rel values if they need additional types.
+- The semantic relationship type set is `supports`, `rebuts`, `derives-from`, `questions`, `refines`. The protocol-level type `notifies` is reserved for node infrastructure use.
 - Cross-type reference validity (e.g., a `question` unit using `rel: "rebuts"`) is not enforced by the schema; it is left to linting tools and reasoning layers to flag unusual combinations.

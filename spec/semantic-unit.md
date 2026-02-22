@@ -138,6 +138,7 @@ Each reference is an object with two required fields:
 | `derives-from` | This unit's content was logically or causally derived from the referenced unit. |
 | `questions`    | This unit raises a question about the referenced unit's content or validity. |
 | `refines`      | This unit narrows, specializes, or adds precision to the referenced unit's claim. |
+| `notifies`     | This unit is a protocol-level system notification about the referenced unit. Used by nodes to report delivery failures or other infrastructure events back to the author's inbox. Agents constructing knowledge-graph units SHOULD use the five semantic relationship types above, not `notifies`. |
 
 References SHOULD be consistent with the unit's type (see Section 5 for guidance). A unit MAY reference units that do not yet exist in a receiver's local graph; receivers MUST NOT reject a unit solely because a referenced id is unknown.
 

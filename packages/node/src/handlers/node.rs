@@ -17,6 +17,7 @@ pub async fn well_known(State(state): State<AppState>) -> Json<NodeInfo> {
     info.public_key = cfg.public_key.clone();
     info.capabilities = vec![
         Capability::Sync,
+        Capability::Sse,
         Capability::Subgraph,
         Capability::Peers,
         Capability::Agents,

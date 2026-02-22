@@ -9,14 +9,13 @@ use serde::{Deserialize, Serialize};
 /// Request body for `POST /v1/agents/{did}/following` — follow an agent.
 ///
 /// After a successful follow, the node will fan-out `network`-visibility units
-/// from `target_did` to `did`'s inbox.
+/// from `target` to `{did}`'s inbox. The follower is identified by the `{did}`
+/// path parameter and the authenticated HTTP Signature; it is not repeated in
+/// the request body.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FollowRequest {
-    /// The DID of the agent that wants to follow.
-    pub follower_did: String,
-
-    /// The DID of the agent to follow.
-    pub target_did: String,
+    /// The DID of the agent to follow (may be on a remote node).
+    pub target: String,
 }
 
 /// A single entry in a follow list.
@@ -62,8 +61,7 @@ mod tests {
     #[test]
     fn follow_request_roundtrip() {
         let req = FollowRequest {
-            follower_did: "did:key:z6MkFollower".into(),
-            target_did: "did:key:z6MkTarget".into(),
+            target: "did:key:z6MkTarget".into(),
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: FollowRequest = serde_json::from_str(&json).unwrap();

@@ -41,14 +41,60 @@ use super::AppState;
 // Query param structs (serde-compatible for axum Query extractor)
 // ---------------------------------------------------------------------------
 
+/// Deserialize a `Vec<String>` from either:
+/// - A single string (split by commas): `?type=assertion,inference`
+/// - A sequence (repeated params): `?type=assertion&type=inference`
+/// - Absent (defaults to empty vec via `#[serde(default)]`)
+fn deserialize_string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{SeqAccess, Visitor};
+    use std::fmt;
+
+    struct StringOrVec;
+
+    impl<'de> Visitor<'de> for StringOrVec {
+        type Value = Vec<String>;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a comma-separated string or a repeated query parameter")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<Vec<String>, E> {
+            Ok(s.split(',')
+                .filter(|t| !t.is_empty())
+                .map(|t| t.trim().to_owned())
+                .collect())
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<String>, A::Error> {
+            let mut out = Vec::new();
+            while let Some(v) = seq.next_element::<String>()? {
+                out.extend(
+                    v.split(',')
+                        .filter(|t| !t.is_empty())
+                        .map(|t| t.trim().to_owned()),
+                );
+            }
+            Ok(out)
+        }
+    }
+
+    deserializer.deserialize_any(StringOrVec)
+}
+
 /// Query parameters for `GET /v1/units` and `GET /v1/sync`.
 ///
-/// `type` accepts comma-separated unit type names, e.g. `?type=assertion,inference`.
+/// `type` is a repeatable parameter per the spec (e.g. `?type=assertion&type=inference`).
+/// Comma-separated values within a single `type` parameter are also accepted for
+/// backwards compatibility (e.g. `?type=assertion,inference`).
 #[derive(Debug, Deserialize, Default)]
 pub struct UnitQueryParams {
-    /// Comma-separated unit types to include (e.g. `assertion,inference`).
-    #[serde(rename = "type")]
-    pub unit_type: Option<String>,
+    /// Repeatable unit type filter (e.g. `?type=assertion&type=inference`).
+    /// Each value may also be comma-separated for backwards compat.
+    #[serde(rename = "type", default, deserialize_with = "deserialize_string_or_vec")]
+    pub unit_type: Vec<String>,
 
     /// Filter by author DID.
     pub author: Option<String>,
@@ -85,7 +131,7 @@ pub async fn submit(
     State(state): State<AppState>,
     auth: OptionalAuth,
     Json(unit): Json<SemanticUnit>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Result<Response, AppError> {
     validate_unit(&unit).map_err(|e| AppError::UnprocessableEntity(e.to_string()))?;
     if unit.proof.is_some() {
         semanticweft::verify_proof(&unit).map_err(|e| AppError::BadRequest(e.to_string()))?;
@@ -104,7 +150,28 @@ pub async fn submit(
         }
     }
 
-    state.storage.put_unit(&unit).await?;
+    match state.storage.put_unit(&unit).await {
+        Ok(()) => {}
+        Err(StorageError::Conflict(_)) => {
+            // The spec (§5.1) requires that re-submission of a unit with the
+            // same `id` and identical content is idempotent (200 OK).
+            // Re-submission with different content is a true conflict (409).
+            let existing = state
+                .storage
+                .get_unit(&unit.id)
+                .await?
+                .ok_or_else(|| AppError::Internal("conflict on put_unit but unit not found".into()))?;
+            if existing == unit {
+                // Idempotent re-submission: return the stored unit, no fan-out.
+                return Ok((StatusCode::OK, Json(existing)).into_response());
+            }
+            return Err(AppError::Conflict(format!(
+                "unit {} already exists with different content",
+                unit.id
+            )));
+        }
+        Err(e) => return Err(AppError::from(e)),
+    }
 
     // Broadcast public units to live SSE subscribers.
     let unit_vis = unit.visibility.as_ref().unwrap_or(&Visibility::Public);
@@ -127,7 +194,7 @@ pub async fn submit(
         remote_fanout(client, unit_fanout, storage, node_did, node_api_base, signing_key).await;
     });
 
-    Ok((StatusCode::CREATED, Json(unit)))
+    Ok((StatusCode::CREATED, Json(unit)).into_response())
 }
 
 /// Deliver a submitted unit to the inboxes of eligible agents on this node.
@@ -369,10 +436,13 @@ async fn remote_fanout(
     }
 }
 
-/// POST a unit to a remote agent inbox with an HTTP Signature, logging any failure.
+/// POST a unit to a remote agent inbox with an HTTP Signature.
 ///
-/// Failure notifications are delivered to the original author's local inbox
-/// (if they are registered here) via [`notify_author_of_failure`].
+/// Retries up to 3 times with exponential backoff (2 s, 4 s) on 5xx or
+/// network errors (spec §9.4 SHOULD). 4xx responses are considered permanent
+/// and are not retried. After all attempts are exhausted a failure notification
+/// is delivered to the original author's local inbox via
+/// [`notify_author_of_failure`].
 async fn push_to_inbox(
     client: &reqwest::Client,
     unit: &SemanticUnit,
@@ -397,45 +467,62 @@ async fn push_to_inbox(
         }
     };
 
-    let (date_val, sig_val) =
-        build_outbound_signature(signing_key, node_did, "post", &req_path, &req_host);
+    // §9.4 SHOULD retry with exponential backoff before giving up.
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut last_error = String::new();
 
-    match client
-        .post(inbox_url)
-        .header("date", &date_val)
-        .header("signature", &sig_val)
-        .header("host", &req_host)
-        .json(unit)
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => {
-            tracing::debug!("push_to_inbox: delivered unit {} to {inbox_url}", unit.id);
+    for attempt in 1..=MAX_ATTEMPTS {
+        // Regenerate the signature each attempt so the Date header stays fresh.
+        let (date_val, sig_val) =
+            build_outbound_signature(signing_key, node_did, "post", &req_path, &req_host);
+
+        match client
+            .post(inbox_url)
+            .header("date", &date_val)
+            .header("signature", &sig_val)
+            .header("host", &req_host)
+            .json(unit)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                tracing::debug!(
+                    "push_to_inbox: delivered unit {} to {inbox_url} (attempt {attempt})",
+                    unit.id
+                );
+                return;
+            }
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                last_error = format!("remote inbox returned HTTP {status}");
+                tracing::warn!(
+                    "push_to_inbox: {inbox_url} returned HTTP {status} — \
+                     attempt {attempt}/{MAX_ATTEMPTS}"
+                );
+                // 4xx = permanent client error; retrying won't help.
+                if status < 500 {
+                    break;
+                }
+            }
+            Err(e) => {
+                last_error = format!("delivery failed: {e}");
+                tracing::warn!(
+                    "push_to_inbox: delivery to {inbox_url} failed: {e} — \
+                     attempt {attempt}/{MAX_ATTEMPTS}"
+                );
+            }
         }
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            tracing::warn!("push_to_inbox: delivery to {inbox_url} returned HTTP {status}");
-            notify_author_of_failure(
-                storage,
-                node_did,
-                unit,
-                inbox_url,
-                &format!("remote inbox returned HTTP {status}"),
-            )
-            .await;
-        }
-        Err(e) => {
-            tracing::warn!("push_to_inbox: delivery to {inbox_url} failed: {e}");
-            notify_author_of_failure(
-                storage,
-                node_did,
-                unit,
-                inbox_url,
-                &format!("delivery failed: {e}"),
-            )
-            .await;
+
+        if attempt < MAX_ATTEMPTS {
+            // Backoff: 2 s after attempt 1, 4 s after attempt 2.
+            tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
         }
     }
+
+    tracing::warn!(
+        "push_to_inbox: giving up on {inbox_url} after {MAX_ATTEMPTS} attempts: {last_error}"
+    );
+    notify_author_of_failure(storage, node_did, unit, inbox_url, &last_error).await;
 }
 
 /// Deliver a delivery-failure notification to the original author's local inbox.
@@ -499,12 +586,17 @@ async fn notify_author_of_failure(
 
 /// `GET /v1/units/{id}` — retrieve a unit by its UUIDv7 ID.
 ///
+/// Returns 400 if `{id}` is not a valid UUIDv7 (spec §5.2 SHOULD).
 /// Visibility is enforced per auth state (see module docs).
 pub async fn get_by_id(
     State(state): State<AppState>,
     Path(id): Path<String>,
     auth: OptionalAuth,
 ) -> Result<Json<SemanticUnit>, AppError> {
+    // §5.2: SHOULD return 400 when the id is not a valid UUIDv7.
+    uuid::Uuid::parse_str(&id)
+        .map_err(|_| AppError::BadRequest(format!("{id:?} is not a valid UUID")))?;
+
     let unit = state
         .storage
         .get_unit(&id)
@@ -739,11 +831,11 @@ pub async fn subgraph(
 fn build_filter(params: UnitQueryParams, visibilities: Vec<Visibility>) -> UnitFilter {
     let limit = params.limit.map(|l| l.clamp(1, 500)).unwrap_or(50);
 
+    // `unit_type` is already split/flattened by the custom deserializer;
+    // just parse each token into a UnitType.
     let unit_types: Vec<semanticweft::UnitType> = params
         .unit_type
-        .as_deref()
-        .unwrap_or("")
-        .split(',')
+        .iter()
         .filter(|s| !s.is_empty())
         .filter_map(|s| s.trim().parse().ok())
         .collect();
