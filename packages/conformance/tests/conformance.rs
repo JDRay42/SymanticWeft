@@ -56,6 +56,7 @@
 //! | `unfollow_wrong_did_returns_403` | §8.5 follows auth |
 //! | `update_peer_reputation_returns_200` | §7 reputation |
 //! | `update_peer_reputation_unknown_returns_404` | §7 reputation |
+//! | `update_own_node_reputation_returns_403` | §7 reputation self-update |
 
 use semanticweft::{RelType, Reference, SemanticUnit, UnitType, Visibility};
 use semanticweft_conformance::spawn_node;
@@ -988,6 +989,22 @@ async fn update_peer_reputation_unknown_returns_404() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 404, "unknown peer should return 404");
+}
+
+#[tokio::test]
+async fn update_own_node_reputation_returns_403() {
+    let (base, _storage) = spawn_node().await;
+    let client = make_client();
+
+    // The conformance node's own DID is "did:key:zConformanceNode".
+    // Attempting to adjust its own reputation must be rejected.
+    let resp = client
+        .patch(format!("{base}/v1/peers/did:key:zConformanceNode"))
+        .json(&serde_json::json!({ "reputation": 1.0 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403, "a node must not update its own reputation");
 }
 
 // ---------------------------------------------------------------------------

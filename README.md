@@ -13,15 +13,15 @@ git clone https://github.com/JDRay42/SemanticWeft.git
 cd SemanticWeft
 
 # Set your public URL (required for federation)
-export SWEFT_API_BASE=https://node.example.com/v1
+export SWEFT_API_BASE=https://node.example.com
 
 docker compose up -d
 ```
 
-The node is available at `http://localhost:3000/v1`. Check it:
+The node is available at `http://localhost:3000`. Check it:
 
 ```sh
-curl http://localhost:3000/v1/node | jq .
+curl http://localhost:3000/.well-known/semanticweft | jq .
 ```
 
 See [`docs/guides/node-operator.md`](docs/guides/node-operator.md) for the full operator guide, including configuration reference, federation setup, reverse proxy configuration, and troubleshooting.
@@ -115,6 +115,23 @@ A `limited` unit must include an `audience` field listing the DIDs of permitted 
 ```
 
 Nodes enforce visibility at retrieval: a non-audience agent requesting a `limited` unit receives `404`, not `403`, to avoid confirming the unit's existence.
+
+### Peer Reputation
+
+The network is self-organising: nodes discover each other through bootstrap peers and peer announcements, with no central registry. Each node independently tracks a **reputation score** for every peer it knows about — a number in `[0.0, 1.0]` that reflects how reliably that peer has behaved. Scores default to `0.5` (neutral) and shift based on reachability checks and protocol compliance.
+
+Any node can signal its assessment of a peer:
+
+```sh
+PATCH /v1/peers/{peer-node-id}
+{"reputation": 0.8}
+```
+
+When a node's peer table is full and a new peer is discovered, the lowest-reputation peer is evicted to make room. This gives well-behaved, reachable nodes a natural advantage in the network.
+
+**A node cannot update its own reputation.** Submitting a `PATCH` where the target DID matches the receiving node's own identity returns `403 Forbidden`. Reputation is always a third-party assessment — the same principle that makes self-referential peer reviews meaningless.
+
+See [ADR-0008](docs/decisions/0008-peer-reputation-system.md) for the full design, including the planned weighted reconciliation algorithm for Phase 2.
 
 ---
 

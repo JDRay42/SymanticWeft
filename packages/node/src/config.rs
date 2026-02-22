@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 /// | Variable | Default | Description |
 /// |----------|---------|-------------|
 /// | `SWEFT_BIND` | `0.0.0.0:3000` | TCP socket address to listen on |
-/// | `SWEFT_API_BASE` | derived from SWEFT_BIND | Base URL advertised in the discovery doc |
+/// | `SWEFT_API_BASE` | derived from SWEFT_BIND | Public host URL advertised in the discovery doc |
 /// | `SWEFT_NODE_ID` | generated `did:key` | Stable DID for this node |
 /// | `SWEFT_NAME` | (absent) | Human-readable node name |
 /// | `SWEFT_CONTACT` | (absent) | Operator contact email or URL |
@@ -28,8 +28,8 @@ pub struct NodeConfig {
     /// Human-readable name, shown in the discovery document.
     pub name: Option<String>,
 
-    /// Base URL of the `/v1/` API, advertised to peers.
-    /// Example: `"https://node.example.com/v1"`.
+    /// Public host URL of this node, advertised to peers.
+    /// Example: `"https://node.example.com"`.
     pub api_base: String,
 
     /// Operator contact info (email or URL), shown in the discovery document.
@@ -45,7 +45,7 @@ pub struct NodeConfig {
     /// How many seconds to wait between federation sync rounds.
     pub sync_interval_secs: u64,
 
-    /// Bootstrap peer API base URLs used on startup for peer discovery.
+    /// Bootstrap peer host URLs used on startup for peer discovery.
     /// Set via `SWEFT_BOOTSTRAP_PEERS` as a comma-separated list.
     pub bootstrap_peers: Vec<String>,
 
@@ -76,7 +76,7 @@ impl NodeConfig {
             .expect("SWEFT_BIND must be a valid socket address (e.g. 0.0.0.0:3000)");
 
         let api_base = std::env::var("SWEFT_API_BASE")
-            .unwrap_or_else(|_| format!("http://{bind_addr}/v1"));
+            .unwrap_or_else(|_| format!("http://{bind_addr}"));
 
         let bootstrap_peers: Vec<String> = std::env::var("SWEFT_BOOTSTRAP_PEERS")
             .unwrap_or_default()

@@ -69,7 +69,7 @@ discovery before the first push to any hostname:
 
 ```
 GET https://<hostname>/.well-known/semanticweft
-→ { "api_base": "https://<hostname>/v1", … }
+→ { "api_base": "https://<hostname>", … }
 → POST https://<hostname>/v1/agents/<encoded-did>/inbox
 ```
 

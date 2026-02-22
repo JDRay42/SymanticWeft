@@ -133,6 +133,12 @@ pub async fn update_reputation(
         ));
     }
 
+    if node_id == state.config.node_id {
+        return Err(AppError::Forbidden(
+            "a node cannot update its own reputation".into(),
+        ));
+    }
+
     state
         .storage
         .update_peer_reputation(&node_id, update.reputation)
@@ -235,6 +241,21 @@ mod tests {
 
         let resp = build_app(storage).oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn update_own_reputation_returns_403() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        // The node's own DID as set in build_app is "did:key:zNode".
+        let req = Request::builder()
+            .method("PATCH")
+            .uri("/v1/peers/did:key:zNode")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"reputation":1.0}"#))
+            .unwrap();
+
+        let resp = build_app(storage).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
