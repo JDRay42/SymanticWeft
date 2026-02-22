@@ -69,8 +69,10 @@ Each `PeerInfo` record carries:
   successful contact.
 
 Eviction policy: when the peer list is full and a new peer is discovered, evict
-the peer with the lowest reputation, breaking ties by oldest `last_seen`.
-New peers are assigned the neutral reputation `0.5`.
+the peer with the lowest reputation only if the incoming peer has **strictly
+higher** reputation. A newcomer whose reputation merely equals the worst
+existing peer's is skipped — equal footing is not sufficient to displace an
+incumbent. New peers are assigned the neutral reputation `0.5`.
 
 ### Phase 2a — Community voting gate (implemented)
 
@@ -239,8 +241,9 @@ via `#[serde(skip_serializing_if)]`.
 - The reputation field is present but inert in Phase 1, giving operators
   a stable schema to build tooling against.
 - Eviction by reputation is live in Phase 1 (lowest reputation is evicted
-  first), creating an incentive for well-behaved nodes to maintain good
-  standing even before adjustment logic exists.
+  first, but only by a strictly better newcomer), creating an incentive for
+  well-behaved nodes to maintain good standing. Incumbents with equal
+  reputation are protected from displacement — a newcomer must earn its slot.
 - Phase 2 can be shipped as a feature flag without protocol changes.
 - The weighted-merge formula is stateless per exchange — no distributed
   consensus is required.
