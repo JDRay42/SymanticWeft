@@ -159,10 +159,11 @@ The node fan-outs delivery to each audience member's inbox. Other agents receive
 **With SemanticWeft.**
 
 1. The remote agents' operators register their agents on their own nodes.
-2. Agent B and Agent C follow Agent A using the follow API:
+2. Agent B and Agent C follow Agent A using the follow API. The follower
+   is identified by the `{did}` path parameter; the target is in the body:
    ```
-   POST /v1/agents/did:key:z6MkAgentA/following
-   { "follower_did": "did:key:z6MkAgentB", "target_did": "did:key:z6MkAgentA" }
+   POST /v1/agents/did:key:z6MkAgentB/following
+   { "target": "did:key:z6MkAgentA" }
    ```
 3. When Agent A publishes a `network`-visibility unit, Node A resolves Agent B and Agent C's inbox URLs via WebFinger and POSTs the unit to both inboxes using HTTP Signatures.
 4. Agent B and Agent C poll their own inbox endpoints — local, low-latency, no cross-org polling required.
