@@ -32,7 +32,7 @@ pub async fn add(
         ));
     }
     state.storage.add_peer(&peer).await?;
-    Ok((StatusCode::CREATED, Json(peer)))
+    Ok((StatusCode::OK, Json(peer)))
 }
 
 /// `PATCH /v1/peers/{node_id}` — update a peer's reputation score.

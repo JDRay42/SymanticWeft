@@ -687,10 +687,7 @@ async fn follow_and_list() {
         .header("host", addr)
         .header("date", &date)
         .header("signature", &sig)
-        .json(&serde_json::json!({
-            "follower_did": follower_did,
-            "target_did": followee_did
-        }))
+        .json(&serde_json::json!({ "target": followee_did }))
         .send()
         .await
         .unwrap();
@@ -752,10 +749,7 @@ async fn unfollow_removes_relationship() {
         .header("host", addr)
         .header("date", &date)
         .header("signature", &sig)
-        .json(&serde_json::json!({
-            "follower_did": follower_did,
-            "target_did": followee_did
-        }))
+        .json(&serde_json::json!({ "target": followee_did }))
         .send()
         .await
         .unwrap();
@@ -807,7 +801,7 @@ async fn follow_unauthenticated_returns_401() {
     let path = format!("/v1/agents/{did}/following");
     let resp = client
         .post(format!("{base}{path}"))
-        .json(&serde_json::json!({ "follower_did": did, "target_did": "did:key:zTarget" }))
+        .json(&serde_json::json!({ "target": "did:key:zTarget" }))
         .send()
         .await
         .unwrap();
@@ -834,7 +828,7 @@ async fn follow_wrong_did_returns_403() {
         .header("host", addr)
         .header("date", &date)
         .header("signature", &sig)
-        .json(&serde_json::json!({ "follower_did": did_b, "target_did": "did:key:zTarget" }))
+        .json(&serde_json::json!({ "target": "did:key:zTarget" }))
         .send()
         .await
         .unwrap();
@@ -903,7 +897,7 @@ async fn update_peer_reputation_returns_200() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 201);
+    assert_eq!(resp.status(), 200);
 
     // Update its reputation.
     let resp = client
@@ -1231,10 +1225,7 @@ async fn inbox_retrieval_after_local_fanout() {
         .header("host", addr)
         .header("date", &date_f)
         .header("signature", &sig_f)
-        .json(&serde_json::json!({
-            "follower_did": follower_did,
-            "target_did": author_did
-        }))
+        .json(&serde_json::json!({ "target": author_did }))
         .send()
         .await
         .unwrap();

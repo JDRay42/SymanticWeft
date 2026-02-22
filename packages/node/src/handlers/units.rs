@@ -41,14 +41,60 @@ use super::AppState;
 // Query param structs (serde-compatible for axum Query extractor)
 // ---------------------------------------------------------------------------
 
+/// Deserialize a `Vec<String>` from either:
+/// - A single string (split by commas): `?type=assertion,inference`
+/// - A sequence (repeated params): `?type=assertion&type=inference`
+/// - Absent (defaults to empty vec via `#[serde(default)]`)
+fn deserialize_string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{SeqAccess, Visitor};
+    use std::fmt;
+
+    struct StringOrVec;
+
+    impl<'de> Visitor<'de> for StringOrVec {
+        type Value = Vec<String>;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a comma-separated string or a repeated query parameter")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<Vec<String>, E> {
+            Ok(s.split(',')
+                .filter(|t| !t.is_empty())
+                .map(|t| t.trim().to_owned())
+                .collect())
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<String>, A::Error> {
+            let mut out = Vec::new();
+            while let Some(v) = seq.next_element::<String>()? {
+                out.extend(
+                    v.split(',')
+                        .filter(|t| !t.is_empty())
+                        .map(|t| t.trim().to_owned()),
+                );
+            }
+            Ok(out)
+        }
+    }
+
+    deserializer.deserialize_any(StringOrVec)
+}
+
 /// Query parameters for `GET /v1/units` and `GET /v1/sync`.
 ///
-/// `type` accepts comma-separated unit type names, e.g. `?type=assertion,inference`.
+/// `type` is a repeatable parameter per the spec (e.g. `?type=assertion&type=inference`).
+/// Comma-separated values within a single `type` parameter are also accepted for
+/// backwards compatibility (e.g. `?type=assertion,inference`).
 #[derive(Debug, Deserialize, Default)]
 pub struct UnitQueryParams {
-    /// Comma-separated unit types to include (e.g. `assertion,inference`).
-    #[serde(rename = "type")]
-    pub unit_type: Option<String>,
+    /// Repeatable unit type filter (e.g. `?type=assertion&type=inference`).
+    /// Each value may also be comma-separated for backwards compat.
+    #[serde(rename = "type", default, deserialize_with = "deserialize_string_or_vec")]
+    pub unit_type: Vec<String>,
 
     /// Filter by author DID.
     pub author: Option<String>,
@@ -760,11 +806,11 @@ pub async fn subgraph(
 fn build_filter(params: UnitQueryParams, visibilities: Vec<Visibility>) -> UnitFilter {
     let limit = params.limit.map(|l| l.clamp(1, 500)).unwrap_or(50);
 
+    // `unit_type` is already split/flattened by the custom deserializer;
+    // just parse each token into a UnitType.
     let unit_types: Vec<semanticweft::UnitType> = params
         .unit_type
-        .as_deref()
-        .unwrap_or("")
-        .split(',')
+        .iter()
         .filter(|s| !s.is_empty())
         .filter_map(|s| s.trim().parse().ok())
         .collect();

@@ -25,22 +25,19 @@ use super::AppState;
 
 /// `POST /v1/agents/{did}/following` — follow a target agent.
 ///
-/// Returns 400 if `follower_did` in the body does not match the `{did}` path
-/// parameter. Returns 401 if unauthenticated. Returns 403 if the authenticated
+/// The follower is identified by the `{did}` path parameter and the
+/// authenticated HTTP Signature. The request body `{ "target": "..." }`
+/// specifies the agent to follow.
+///
+/// Returns 401 if unauthenticated. Returns 403 if the authenticated
 /// DID does not match `{did}`. Returns 404 if the follower agent is not
-/// registered on this node. Returns 204 on success.
+/// registered on this node. Returns 200 with a [`FollowEntry`] on success.
 pub async fn follow(
     State(state): State<AppState>,
     Path(did): Path<String>,
     auth: RequireAuth,
     Json(req): Json<FollowRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    if req.follower_did != did {
-        return Err(AppError::BadRequest(
-            "follower_did in body must match the {did} path parameter".into(),
-        ));
-    }
-
     if auth.did != did {
         return Err(AppError::Forbidden(
             "cannot follow on behalf of a different agent".into(),
@@ -56,10 +53,10 @@ pub async fn follow(
 
     state
         .storage
-        .add_follow(&req.follower_did, &req.target_did)
+        .add_follow(&did, &req.target)
         .await?;
 
-    Ok(StatusCode::NO_CONTENT)
+    Ok((StatusCode::OK, Json(FollowEntry { did: req.target, inbox_url: None })))
 }
 
 /// `DELETE /v1/agents/{did}/following/{target}` — unfollow a target agent.
@@ -200,8 +197,7 @@ mod tests {
             .uri(&path)
             .header("content-type", "application/json")
             .body(Body::from(
-                serde_json::json!({ "follower_did": did, "target_did": "did:key:zTarget" })
-                    .to_string(),
+                serde_json::json!({ "target": "did:key:zTarget" }).to_string(),
             ))
             .unwrap();
 
@@ -228,8 +224,7 @@ mod tests {
             .header("date", &date)
             .header("signature", &sig)
             .body(Body::from(
-                serde_json::json!({ "follower_did": did_b, "target_did": "did:key:zTarget" })
-                    .to_string(),
+                serde_json::json!({ "target": "did:key:zTarget" }).to_string(),
             ))
             .unwrap();
 
@@ -238,7 +233,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn follow_success_returns_204() {
+    async fn follow_success_returns_200() {
         let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
         let (key, did) = make_key_and_did();
         seed(&storage, &key).await;
@@ -254,13 +249,12 @@ mod tests {
             .header("date", &date)
             .header("signature", &sig)
             .body(Body::from(
-                serde_json::json!({ "follower_did": did, "target_did": "did:key:zTarget" })
-                    .to_string(),
+                serde_json::json!({ "target": "did:key:zTarget" }).to_string(),
             ))
             .unwrap();
 
         let resp = build_app(storage).oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     // -----------------------------------------------------------------------
