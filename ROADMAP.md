@@ -85,10 +85,11 @@ This document maps the full development arc of the SemanticWeft protocol — fro
 
 *Ensure the protocol can evolve without fragmentation, and that no single party controls it.*
 
-- [ ] **Conformance test suite** — a machine-readable set of tests that any implementation can run to verify compliance
+- [ ] **Conformance test suite** — a machine-readable set of tests that any implementation can run to verify compliance; refactor `packages/conformance` into a standalone binary that tests any HTTP endpoint (removing its current dependency on `semanticweft-node`)
 - [ ] **Protocol versioning policy** — how breaking vs. non-breaking changes are classified and communicated
 - [ ] **Extension registry** — a public registry of namespaced extensions so the community can coordinate without requiring core spec changes
 - [ ] **Governance model** — how decisions about the protocol are made; who has standing; how forks are handled
+- [ ] **Trademark policy** — define what may be called "SemanticWeft-conformant"; CC BY-SA 4.0 protects the spec text from proprietary forks, but trademark is the mechanism that controls use of the name and conformance badge
 
 ---
 
@@ -123,3 +124,4 @@ The immediate priority is **Phase 6: Ecosystem and Governance** — the infrastr
 - A protocol versioning policy that distinguishes breaking from non-breaking changes.
 - An extension registry so the community can coordinate on namespace additions without requiring core spec changes.
 - A governance model that keeps control distributed and prevents any single operator from steering the protocol.
+- A trademark policy for the "SemanticWeft" name and conformance badge, complementing the CC BY-SA protection on the spec (see ADR-0012).
