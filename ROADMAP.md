@@ -15,81 +15,69 @@ This document maps the full development arc of the SemanticWeft protocol — fro
 
 ---
 
-## Phase 1: Schema Specification
+## Phase 1: Schema Specification ✓
 
 *Define the Semantic Unit formally enough that any two independent implementations can exchange units and agree on their meaning.*
 
-- [ ] **JSON Schema for Semantic Units** — required fields, types, constraints
-- [ ] **Field semantics document** — what each field means, what values are valid, edge cases
-- [ ] **Unit type definitions** — formal semantics for `assertion`, `question`, `inference`, `challenge`, `constraint`; rules for valid references between types
-- [ ] **Versioning and extension model** — how the schema evolves without breaking existing units; how implementers add fields without conflicting
-- [ ] **Formal specification document** — a human-readable spec (Markdown or RFC-style) that is the normative reference for all implementations
+- [x] **JSON Schema for Semantic Units** — `spec/schema/unit.schema.json` (JSON Schema 2020-12)
+- [x] **Field semantics document** — `spec/semantic-unit.md` normative specification
+- [x] **Unit type definitions** — five types (`assertion`, `question`, `inference`, `challenge`, `constraint`) with formal reference rules; five relationship types (`supports`, `rebuts`, `derives-from`, `questions`, `refines`)
+- [x] **Versioning and extension model** — `x-` prefix namespacing for extensions (ADR-004)
+- [x] **Formal specification document** — `spec/semantic-unit.md` is the normative reference
 
-**Open decisions:**
-- Which fields are required vs. optional? (`confidence`, `assumptions`, `source` are present in the example but their optionality is unspecified)
-- What is the valid range and interpretation of `confidence`? (0–1 float? Enum? Required?)
-- Are `references` typed? (Does a unit declare *why* it references another — support, rebuttal, derivation?)
-- How are extensions namespaced to avoid collisions?
+**Decisions made:** `confidence` is an optional 0–1 float; `references` are typed with explicit `rel` fields; extensions use `x-<namespace>-<field>` namespacing.
 
 ---
 
-## Phase 2: Reference Implementation
+## Phase 2: Reference Implementation ✓
 
 *A library that makes it easy to build compliant agents, and validates that the schema is implementable.*
 
-- [ ] **Core library** — create, validate, serialize, and deserialize Semantic Units
-- [ ] **Graph traversal** — navigate a local collection of units: ancestors, descendants, subgraphs by type
-- [ ] **Human-readable rendering** — generate natural language summaries from unit graphs (the "expression layer")
-- [ ] **Validation CLI** — check a unit or a graph of units against the spec
+- [x] **Core library** — `packages/core` (`semanticweft` crate): types, validation, serialization, JCS canonicalisation
+- [x] **Graph traversal** — in-memory unit graph with ancestor/descendant traversal and type filtering
+- [x] **Human-readable rendering** — `packages/core/src/render.rs` generates natural language summaries from unit graphs
+- [x] **Validation CLI** — `sweft validate` checks units against the spec; `sweft render` produces human-readable output
 
-**Language: Rust.** The reference implementation is written in Rust. Reasons: native binaries with no runtime dependency, first-class WebAssembly compilation (one crate, every ecosystem), and a type system that makes protocol correctness hard to undermine accidentally. Distributed as `sweft` (CLI) and the `semanticweft` crate.
-
-**Open decisions:**
-- Packaging and distribution strategy (crates.io for the library; GitHub Releases for pre-built CLI binaries; WASM build for browser/embedding use)
+**Language: Rust.** Distributed as `sweft` (CLI) and the `semanticweft` crate. WebAssembly bindings in `packages/wasm`.
 
 ---
 
-## Phase 3: Identity and Trust
+## Phase 3: Identity and Trust ✓
 
 *Make unit authorship verifiable. An assertion is only as useful as the trust placed in its source.*
 
-- [ ] **Agent identity model** — how agents are identified; likely [Decentralized Identifiers (DIDs)](https://www.w3.org/TR/did-core/) to avoid dependence on any central registry
-- [ ] **Unit signing** — cryptographic signature attached to units at creation; schema extension for signature fields
-- [ ] **Verification** — how a receiving agent verifies a unit's signature and resolves the signing key
-- [ ] **Trust levels** — how agents express and reason about varying degrees of trust in sources
-- [ ] **Revocation** — how an agent can retract or supersede a previously issued unit
+- [x] **Agent identity model** — `did:key` (Ed25519) for agents and nodes; self-contained, no central registry required (ADR-0001)
+- [x] **Unit signing** — Ed25519 signatures over JCS-canonicalised unit JSON; `proof` field in unit schema
+- [x] **Verification** — public key embedded in `did:key`; verification is local and requires no network lookup
+- [x] **Trust levels** — peer reputation system tracks node reliability scores (ADR-0008)
+- [x] **Revocation** — units are immutable; a `challenge` unit with `rebuts` reference is the protocol-native retraction mechanism
 
-**Open decisions:**
-- DID method(s) to support (did:web is simple; did:key is self-contained; others add complexity)
-- Signature scheme (Ed25519 is the practical default)
-- Whether trust is expressed in-band (in unit fields) or out-of-band (separate trust assertions)
+**Decisions made:** `did:key` chosen for self-containment (ADR-0001); Ed25519 chosen for performance and widespread support (ADR-0002); trust expressed via peer reputation scores, not in-band unit fields (ADR-0003).
 
 ---
 
-## Phase 4: Transport and Federation
+## Phase 4: Transport and Federation ✓
 
 *Define how units move between agents and nodes, and how the graph grows across a network.*
 
-- [x] **Node API specification** — HTTP endpoints for submitting and retrieving units; pagination; filtering by type, source, reference
-- [x] **Unit submission protocol** — how an agent publishes a unit to a node
-- [x] **Graph sync** — how nodes replicate units from each other; push vs. pull; conflict model
-- [x] **Node discovery** — how agents and nodes find each other; bootstrapping
+- [x] **Node API specification** — `spec/node-api.md`: HTTP/REST endpoints with pagination and filtering (ADR-0004)
+- [x] **Unit submission protocol** — Ed25519 HTTP Signatures for authenticated agent requests
+- [x] **Graph sync** — pull-based federation with SSE streaming for live updates; eventual consistency model (ADR-0005, ADR-0009)
+- [x] **Node discovery** — bootstrap peer list with automatic peer table propagation (ADR-0010)
 
-**Open decisions:**
-- Transport mechanism (REST/HTTP is the baseline; WebSockets or SSE for streaming; ActivityPub-style federation is worth evaluating)
-- Consistency model for federated graphs (eventual consistency is the practical answer, but the implications need spelling out)
-- Rate limiting and spam prevention without a central authority
+**Decisions made:** REST/HTTP with SSE for streaming (ADR-0004); eventual consistency (ADR-0005); rate limiting per client IP without central authority (ADR-0006); pull-based federation with push for `network` visibility fan-out (ADR-0009).
 
 ---
 
-## Phase 5: Node Hosting
+## Phase 5: Node Hosting ✓
 
 *Make it practical to run a node, so the network can actually exist.*
 
-- [ ] **Storage specification** — what a node must be able to store and index; no prescribed database, but defined requirements
-- [ ] **Reference node implementation** — a runnable node that passes the conformance suite
-- [ ] **Self-hosting guide** — documentation for running a node without deep protocol knowledge
-- [ ] **Operational requirements** — minimum hardware, uptime expectations, data retention policies
+- [x] **Storage specification** — SQLite with bundled driver; defined storage trait allows alternative backends
+- [x] **Reference node implementation** — `sweft-node` binary passes the conformance suite; persistent and in-memory modes
+- [x] **Docker infrastructure** — multi-stage `Dockerfile` and `docker-compose.yml` for one-command deployment
+- [x] **Self-hosting guide** — [`docs/guides/node-operator.md`](docs/guides/node-operator.md) covers installation, configuration, federation, security, and troubleshooting
+- [x] **Operational requirements** — documented in the operator guide (hardware minimums, uptime expectations, data retention guidance)
 
 ---
 
@@ -127,6 +115,11 @@ This document maps the full development arc of the SemanticWeft protocol — fro
 
 ## What's Next
 
-The immediate priority is **Phase 1**. The schema must be nailed down before anything else can build on it — the reference implementation, the trust layer, and the transport protocol all depend on a stable unit structure.
+Phases 0–5 are complete. The network is runnable: anyone can stand up a node with `docker compose up`, register agents, submit units, and federate with peers.
 
-Start with the field semantics: enumerate every field, decide what's required, and make the hard calls on `confidence`, typed references, and extension namespacing. The spec document follows from that.
+The immediate priority is **Phase 6: Ecosystem and Governance** — the infrastructure needed for the protocol to evolve safely without fragmenting. Key open items:
+
+- A machine-readable conformance suite that third-party implementations can run to certify compliance.
+- A protocol versioning policy that distinguishes breaking from non-breaking changes.
+- An extension registry so the community can coordinate on namespace additions without requiring core spec changes.
+- A governance model that keeps control distributed and prevents any single operator from steering the protocol.
