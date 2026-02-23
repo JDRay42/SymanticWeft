@@ -173,6 +173,21 @@ pub async fn submit(
         Err(e) => return Err(AppError::from(e)),
     }
 
+    // Set credibility for locally-submitted units: the author's reputation on
+    // this node. For units from unknown authors, default to 0.5 (neutral).
+    let author_rep = state
+        .storage
+        .get_agent(&unit.author)
+        .await
+        .ok()
+        .flatten()
+        .map(|a| a.reputation)
+        .unwrap_or(0.5);
+    let _ = state
+        .storage
+        .set_unit_credibility(&unit.id, author_rep)
+        .await;
+
     // Broadcast public units to live SSE subscribers.
     let unit_vis = unit.visibility.as_ref().unwrap_or(&Visibility::Public);
     if *unit_vis == Visibility::Public {
@@ -743,7 +758,21 @@ pub async fn sync(
             .into_response())
     } else {
         let (units, has_more) = state.storage.list_units(&filter).await?;
-        Ok(Json(ListResponse::from_page(units, has_more)).into_response())
+        let mut resp = ListResponse::from_page(units, has_more);
+
+        // Populate author_reputations so receiving nodes can compute
+        // credibility = local_reputation(this_node) × author_reputation.
+        let mut author_reputations = std::collections::HashMap::new();
+        for unit in &resp.units {
+            if !author_reputations.contains_key(&unit.author) {
+                if let Ok(Some(profile)) = state.storage.get_agent(&unit.author).await {
+                    author_reputations.insert(unit.author.clone(), profile.reputation);
+                }
+            }
+        }
+        resp.author_reputations = author_reputations;
+
+        Ok(Json(resp).into_response())
     }
 }
 

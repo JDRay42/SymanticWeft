@@ -189,6 +189,7 @@ mod tests {
                 public_key: Some(format!("z{encoded}")),
                 status: semanticweft_node_api::AgentStatus::Full,
                 contribution_count: 0,
+                reputation: 0.5,
             })
             .await
             .unwrap();

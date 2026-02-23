@@ -521,6 +521,7 @@ mod tests {
             public_key: Some(multibase.to_string()),
             status: semanticweft_node_api::AgentStatus::Full,
             contribution_count: 0,
+            reputation: 0.5,
         };
         storage.put_agent(&profile).await.unwrap();
 

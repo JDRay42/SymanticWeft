@@ -1,5 +1,7 @@
 //! Unit submission, retrieval, and listing types (spec §5).
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use semanticweft::SemanticUnit;
@@ -88,18 +90,36 @@ pub struct ListResponse {
 
     /// `true` if there are more units after this page.
     pub has_more: bool,
+
+    /// Per-author reputation scores for the agents whose units appear on this
+    /// page, as assessed by the responding node. Keyed by author DID.
+    ///
+    /// Present in sync responses (`GET /v1/sync`) so that receiving nodes can
+    /// compute a **credibility** score for federated units:
+    ///
+    /// ```text
+    /// credibility = local_reputation(sending_node) × author_reputation
+    /// ```
+    ///
+    /// Absent from regular `GET /v1/units` responses and from older nodes that
+    /// do not yet track agent reputation.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub author_reputations: HashMap<String, f32>,
 }
 
 impl ListResponse {
     /// Construct a response from a page of units and a total-availability flag.
     ///
     /// The `cursor` is set to the `id` of the last unit in `units`.
+    /// `author_reputations` is empty; callers that want to include reputation
+    /// metadata (e.g. the sync endpoint) should set it afterwards.
     pub fn from_page(units: Vec<SemanticUnit>, has_more: bool) -> Self {
         let cursor = units.last().map(|u| u.id.clone());
         Self {
             units,
             cursor,
             has_more,
+            author_reputations: HashMap::new(),
         }
     }
 
@@ -109,6 +129,7 @@ impl ListResponse {
             units: vec![],
             cursor: None,
             has_more: false,
+            author_reputations: HashMap::new(),
         }
     }
 }
@@ -149,7 +170,6 @@ pub struct SubgraphResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn unit(id: &str) -> SemanticUnit {
         SemanticUnit {

@@ -75,7 +75,10 @@ impl FederationSync {
     /// 2. Calls `GET {api_base}/sync?after={cursor}&limit=500`.
     /// 3. For each unit in the response, calls [`Storage::put_unit`]; a
     ///    [`StorageError::Conflict`] (unit already stored) is silently ignored.
-    /// 4. Advances the cursor in storage to the `cursor` field of the response.
+    /// 4. Computes a **credibility** score for each new unit using the peer's
+    ///    local reputation and the author reputations included in the sync
+    ///    response: `credibility = peer_reputation × author_reputation`.
+    /// 5. Advances the cursor in storage to the `cursor` field of the response.
     ///
     /// Returns `true` when `has_more` is set in the response (more pages
     /// available), `false` when this was the last page.
@@ -97,13 +100,29 @@ impl FederationSync {
         let page: ListResponse = response.json().await?;
         let has_more = page.has_more;
 
+        // Look up the peer's local reputation so we can weight author scores.
+        let peer_reputation = self.peer_reputation_for(api_base).await;
+
         for unit in &page.units {
-            match self.storage.put_unit(unit).await {
-                Ok(()) => {}
-                Err(StorageError::Conflict(_)) => {
-                    // Already have this unit — eventual consistency, not an error.
-                }
+            let is_new = match self.storage.put_unit(unit).await {
+                Ok(()) => true,
+                Err(StorageError::Conflict(_)) => false,
                 Err(e) => return Err(SyncError::Storage(e)),
+            };
+
+            // Compute credibility for newly stored units.
+            if is_new {
+                let author_rep = page
+                    .author_reputations
+                    .get(&unit.author)
+                    .copied()
+                    .unwrap_or(0.5);
+                let credibility = peer_reputation * author_rep;
+                // Best-effort; credibility storage failure is not fatal.
+                let _ = self
+                    .storage
+                    .set_unit_credibility(&unit.id, credibility)
+                    .await;
             }
         }
 
@@ -113,6 +132,20 @@ impl FederationSync {
         }
 
         Ok(has_more)
+    }
+
+    /// Look up the local reputation of the peer identified by `api_base`.
+    ///
+    /// Falls back to `0.5` (neutral) if the peer is not in our registry.
+    async fn peer_reputation_for(&self, api_base: &str) -> f32 {
+        match self.storage.list_peers().await {
+            Ok(peers) => peers
+                .iter()
+                .find(|p| p.api_base == api_base)
+                .map(|p| p.reputation)
+                .unwrap_or(0.5),
+            Err(_) => 0.5,
+        }
     }
 
     /// Drain all available pages from a peer in one shot.

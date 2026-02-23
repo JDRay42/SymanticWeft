@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS units (
     author      TEXT NOT NULL,
     created_at  TEXT NOT NULL,
     visibility  TEXT NOT NULL DEFAULT 'public',
-    data        TEXT NOT NULL
+    data        TEXT NOT NULL,
+    credibility REAL
 );
 CREATE INDEX IF NOT EXISTS idx_units_author     ON units(author);
 CREATE INDEX IF NOT EXISTS idx_units_type       ON units(unit_type);
@@ -56,7 +57,8 @@ CREATE TABLE IF NOT EXISTS agents (
     display_name       TEXT,
     public_key         TEXT,
     status             TEXT NOT NULL DEFAULT 'full',
-    contribution_count INTEGER NOT NULL DEFAULT 0
+    contribution_count INTEGER NOT NULL DEFAULT 0,
+    reputation         REAL NOT NULL DEFAULT 0.5
 );
 
 CREATE TABLE IF NOT EXISTS follows (
@@ -119,6 +121,17 @@ impl SqliteStorage {
         })
     }
 
+    /// Open an in-memory SQLite database for tests.
+    #[cfg(test)]
+    pub fn open_in_memory() -> Result<Self, rusqlite::Error> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(SCHEMA)?;
+        Self::migrate(&conn)?;
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
+    }
+
     /// Apply additive migrations for existing databases that pre-date schema
     /// additions. Each `ALTER TABLE` is attempted and the error for "duplicate
     /// column name" is swallowed — this is intentional and safe.
@@ -137,6 +150,17 @@ impl SqliteStorage {
         );
         let _ = conn.execute(
             "ALTER TABLE agents ADD COLUMN contribution_count INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        // agents: reputation column (agent-level reputation).
+        let _ = conn.execute(
+            "ALTER TABLE agents ADD COLUMN reputation REAL NOT NULL DEFAULT 0.5",
+            [],
+        );
+
+        // units: credibility column (receiver-computed score).
+        let _ = conn.execute(
+            "ALTER TABLE units ADD COLUMN credibility REAL",
             [],
         );
 
@@ -400,6 +424,33 @@ impl Storage for SqliteStorage {
         .map_err(|e| StorageError::Internal(format!("task join error: {e}")))?
     }
 
+    async fn set_unit_credibility(
+        &self,
+        id: &str,
+        credibility: f32,
+    ) -> Result<(), StorageError> {
+        let conn = Arc::clone(&self.conn);
+        let id = id.to_string();
+        let credibility = credibility.clamp(0.0, 1.0) as f64;
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let rows = conn
+                .execute(
+                    "UPDATE units SET credibility = ?1 WHERE id = ?2",
+                    params![credibility, id],
+                )
+                .map_err(map_err)?;
+            if rows == 0 {
+                Err(StorageError::NotFound)
+            } else {
+                Ok(())
+            }
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("task join error: {e}")))?
+    }
+
     // --- Agents --------------------------------------------------------------
 
     async fn put_agent(&self, profile: &AgentProfile) -> Result<(), StorageError> {
@@ -413,14 +464,15 @@ impl Storage for SqliteStorage {
             };
             let conn = conn.lock().unwrap();
             conn.execute(
-                "INSERT INTO agents (did, inbox_url, display_name, public_key, status, contribution_count)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                "INSERT INTO agents (did, inbox_url, display_name, public_key, status, contribution_count, reputation)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT(did) DO UPDATE SET
                    inbox_url          = excluded.inbox_url,
                    display_name       = excluded.display_name,
                    public_key         = excluded.public_key,
                    status             = excluded.status,
-                   contribution_count = excluded.contribution_count",
+                   contribution_count = excluded.contribution_count,
+                   reputation         = excluded.reputation",
                 params![
                     profile.did,
                     profile.inbox_url,
@@ -428,6 +480,7 @@ impl Storage for SqliteStorage {
                     profile.public_key,
                     status_str,
                     profile.contribution_count,
+                    profile.reputation as f64,
                 ],
             )
             .map_err(map_err)?;
@@ -444,7 +497,7 @@ impl Storage for SqliteStorage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let result = conn.query_row(
-                "SELECT did, inbox_url, display_name, public_key, status, contribution_count
+                "SELECT did, inbox_url, display_name, public_key, status, contribution_count, reputation
                  FROM agents WHERE did = ?1",
                 params![did],
                 |row| {
@@ -460,6 +513,7 @@ impl Storage for SqliteStorage {
                             AgentStatus::Full
                         },
                         contribution_count: row.get(5)?,
+                        reputation: row.get::<_, f64>(6)? as f32,
                     })
                 },
             );
@@ -527,6 +581,65 @@ impl Storage for SqliteStorage {
                 Ok(true) // graduated
             } else {
                 Ok(false)
+            }
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("task join error: {e}")))?
+    }
+
+    async fn update_agent_reputation(
+        &self,
+        did: &str,
+        reputation: f32,
+    ) -> Result<(), StorageError> {
+        let conn = Arc::clone(&self.conn);
+        let did = did.to_string();
+        let reputation = reputation.clamp(0.0, 1.0) as f64;
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let rows = conn
+                .execute(
+                    "UPDATE agents SET reputation = ?1 WHERE did = ?2",
+                    params![reputation, did],
+                )
+                .map_err(map_err)?;
+            if rows == 0 {
+                Err(StorageError::NotFound)
+            } else {
+                Ok(())
+            }
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("task join error: {e}")))?
+    }
+
+    async fn agent_reputation_stats(&self) -> Result<ReputationStats, StorageError> {
+        let conn = Arc::clone(&self.conn);
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let result = conn.query_row(
+                "SELECT COUNT(*), AVG(reputation), AVG(reputation * reputation) FROM agents",
+                [],
+                |row| {
+                    let count: i64 = row.get(0)?;
+                    let avg: Option<f64> = row.get(1)?;
+                    let avg_sq: Option<f64> = row.get(2)?;
+                    Ok((count, avg, avg_sq))
+                },
+            );
+            match result {
+                Ok((0, _, _)) | Ok((_, None, _)) => Ok(ReputationStats { mean: 0.0, stddev: 0.0 }),
+                Ok((_, Some(mean), Some(avg_sq))) => {
+                    let variance = (avg_sq - mean * mean).max(0.0);
+                    Ok(ReputationStats {
+                        mean: mean as f32,
+                        stddev: variance.sqrt() as f32,
+                    })
+                }
+                Ok(_) => Ok(ReputationStats { mean: 0.0, stddev: 0.0 }),
+                Err(e) => Err(map_err(e)),
             }
         })
         .await

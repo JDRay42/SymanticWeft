@@ -6,6 +6,10 @@
 
 use serde::{Deserialize, Serialize};
 
+fn default_agent_reputation() -> f32 {
+    0.5
+}
+
 /// Membership status of an agent registered on this node (ADR-0013).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -32,7 +36,8 @@ pub enum AgentStatus {
 ///   "inbox_url": "https://node.example.com/v1/agents/did%3Akey%3Az6MkHaXXX/inbox",
 ///   "display_name": "Researcher-7",
 ///   "status": "full",
-///   "contribution_count": 0
+///   "contribution_count": 0,
+///   "reputation": 0.5
 /// }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -62,6 +67,15 @@ pub struct AgentProfile {
     /// configured `probation_threshold`. Defaults to `0`.
     #[serde(default)]
     pub contribution_count: u32,
+
+    /// This node's local reputation score for the agent, in `[0.0, 1.0]`.
+    ///
+    /// Defaults to `0.5` (neutral). Adjusted over time by community voting
+    /// via `PATCH /v1/agents/{did}/reputation`. Included in sync responses
+    /// as `author_reputations` so that receiving nodes can compute a
+    /// credibility score for federated units.
+    #[serde(default = "default_agent_reputation")]
+    pub reputation: f32,
 }
 
 /// Request body for `POST /v1/agents/{did}` — register or update an agent.
@@ -117,6 +131,19 @@ pub struct ApplyRequest {
     pub sponsor_did: Option<String>,
 }
 
+/// Request body for `PATCH /v1/agents/{did}/reputation` — update an agent's
+/// reputation score.
+///
+/// `reputation` must be in `[0.0, 1.0]`. The update is community-gated and
+/// weighted: only registered agents above the community voting threshold may
+/// vote, and the vote is blended with the current value using the caller's
+/// own reputation as weight (EigenTrust update rule).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentReputationUpdate {
+    /// Proposed reputation score for the agent, in `[0.0, 1.0]`.
+    pub reputation: f32,
+}
+
 /// Response body for `GET /v1/agents/{did}/inbox`.
 ///
 /// A page of units delivered to the agent's inbox that it has not yet
@@ -169,6 +196,7 @@ mod tests {
             public_key: None,
             status: AgentStatus::Full,
             contribution_count: 0,
+            reputation: 0.5,
         };
         let json = serde_json::to_string(&profile).unwrap();
         let back: AgentProfile = serde_json::from_str(&json).unwrap();
@@ -184,19 +212,23 @@ mod tests {
             public_key: None,
             status: AgentStatus::Probationary,
             contribution_count: 3,
+            reputation: 0.75,
         };
         let json = serde_json::to_string(&profile).unwrap();
         assert!(json.contains("\"status\":\"probationary\""));
         assert!(json.contains("\"contribution_count\":3"));
+        assert!(json.contains("\"reputation\":0.75"));
     }
 
     #[test]
-    fn agent_profile_status_defaults_to_full_when_absent() {
-        // Pre-ADR-0013 JSON has no status field; should deserialise as Full.
+    fn agent_profile_defaults_when_fields_absent() {
+        // Pre-existing JSON without status, contribution_count, or reputation
+        // fields should deserialise with defaults.
         let json = r#"{"did":"did:key:z6Mk","inbox_url":"https://example.com/inbox"}"#;
         let profile: AgentProfile = serde_json::from_str(json).unwrap();
         assert_eq!(profile.status, AgentStatus::Full);
         assert_eq!(profile.contribution_count, 0);
+        assert!((profile.reputation - 0.5).abs() < f32::EPSILON);
     }
 
     #[test]

@@ -66,6 +66,10 @@ pub fn build_router(
         )
         .route("/v1/agents/{did}/apply", post(agents::apply))
         .route(
+            "/v1/agents/{did}/reputation",
+            patch(agents::update_reputation),
+        )
+        .route(
             "/v1/agents/{did}/inbox",
             get(agents::inbox).post(agents::inbox_deliver),
         )
