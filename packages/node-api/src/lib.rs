@@ -33,7 +33,7 @@ pub mod node;
 pub mod peer;
 pub mod unit;
 
-pub use agent::{AgentProfile, AgentStatus, ApplyRequest, InboxResponse, RegisterRequest};
+pub use agent::{AgentProfile, AgentReputationUpdate, AgentStatus, ApplyRequest, InboxResponse, RegisterRequest};
 pub use error::ErrorResponse;
 pub use follow::{FollowEntry, FollowListResponse, FollowRequest};
 pub use node::{Capability, NodeInfo, PowParams};

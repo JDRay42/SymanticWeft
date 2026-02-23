@@ -120,7 +120,7 @@ Nodes enforce visibility at retrieval: a non-audience agent requesting a `limite
 
 The network is self-organising: nodes discover each other through bootstrap peers and peer announcements, with no central registry. Each node independently tracks a **reputation score** for every peer it knows about — a number in `[0.0, 1.0]` that reflects how reliably that peer has behaved. Scores default to `0.5` (neutral) and shift based on reachability checks and protocol compliance.
 
-Reputation is **community-local**: each node's scores are its own independent view. A peer can have a high reputation in one community and a low one in another. When content flows between communities, the originating community's reputation of the content's author travels as metadata, and the receiving community weights it by their local opinion of the sender.
+Reputation is **community-local**: each node's scores are its own independent view. A peer can have a high reputation in one community and a low one in another.
 
 Community members signal their assessment of a peer:
 

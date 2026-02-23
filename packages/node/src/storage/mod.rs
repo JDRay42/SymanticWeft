@@ -136,6 +136,20 @@ pub trait Storage: Send + Sync + 'static {
     /// Used by the subgraph handler to traverse in both directions.
     async fn get_referencing_units(&self, id: &str) -> Result<Vec<SemanticUnit>, StorageError>;
 
+    /// Set the receiver-computed credibility score for a unit.
+    ///
+    /// For locally-authored units, this is the author's reputation on this node.
+    /// For federated units, this is `peer_reputation × author_reputation` as
+    /// reported by the originating node.
+    ///
+    /// This is receiver-side metadata, not part of the immutable unit. Returns
+    /// [`StorageError::NotFound`] if no unit with `id` exists.
+    async fn set_unit_credibility(
+        &self,
+        id: &str,
+        credibility: f32,
+    ) -> Result<(), StorageError>;
+
     // --- Agents --------------------------------------------------------------
 
     /// Register or update an agent profile (upsert by `did`).
@@ -159,6 +173,23 @@ pub trait Storage: Send + Sync + 'static {
         did: &str,
         threshold: u32,
     ) -> Result<bool, StorageError>;
+
+    /// Update the reputation score for a registered agent.
+    ///
+    /// `reputation` must be in `[0.0, 1.0]`. Returns [`StorageError::NotFound`]
+    /// if no agent with `did` is registered.
+    async fn update_agent_reputation(
+        &self,
+        did: &str,
+        reputation: f32,
+    ) -> Result<(), StorageError>;
+
+    /// Return aggregate reputation statistics across all registered agents.
+    ///
+    /// Used by the community voting threshold gate in
+    /// `PATCH /v1/agents/{did}/reputation` to compute
+    /// `threshold = max(0.0, mean − σ_factor × stddev)`.
+    async fn agent_reputation_stats(&self) -> Result<ReputationStats, StorageError>;
 
     // --- Follows -------------------------------------------------------------
 

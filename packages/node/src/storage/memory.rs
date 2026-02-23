@@ -22,6 +22,8 @@ use super::{ReputationStats, Storage, StorageError, UnitFilter};
 
 struct Inner {
     units: BTreeMap<String, SemanticUnit>,
+    /// Receiver-computed credibility scores for units (unit_id → credibility).
+    unit_credibility: HashMap<String, f32>,
     agents: HashMap<String, AgentProfile>,
     follows: HashSet<(String, String)>,
     peers: HashMap<String, PeerInfo>,
@@ -36,6 +38,7 @@ impl Inner {
     fn new() -> Self {
         Self {
             units: BTreeMap::new(),
+            unit_credibility: HashMap::new(),
             agents: HashMap::new(),
             follows: HashSet::new(),
             peers: HashMap::new(),
@@ -174,6 +177,21 @@ impl Storage for MemoryStorage {
         Ok(results)
     }
 
+    async fn set_unit_credibility(
+        &self,
+        id: &str,
+        credibility: f32,
+    ) -> Result<(), StorageError> {
+        let mut inner = self.inner.write().unwrap();
+        if !inner.units.contains_key(id) {
+            return Err(StorageError::NotFound);
+        }
+        inner
+            .unit_credibility
+            .insert(id.to_string(), credibility.clamp(0.0, 1.0));
+        Ok(())
+    }
+
     // --- Agents --------------------------------------------------------------
 
     async fn put_agent(&self, profile: &AgentProfile) -> Result<(), StorageError> {
@@ -212,6 +230,39 @@ impl Storage for MemoryStorage {
         } else {
             Ok(false)
         }
+    }
+
+    async fn update_agent_reputation(
+        &self,
+        did: &str,
+        reputation: f32,
+    ) -> Result<(), StorageError> {
+        let mut inner = self.inner.write().unwrap();
+        match inner.agents.get_mut(did) {
+            Some(agent) => {
+                agent.reputation = reputation.clamp(0.0, 1.0);
+                Ok(())
+            }
+            None => Err(StorageError::NotFound),
+        }
+    }
+
+    async fn agent_reputation_stats(&self) -> Result<ReputationStats, StorageError> {
+        let inner = self.inner.read().unwrap();
+        let count = inner.agents.len();
+        if count == 0 {
+            return Ok(ReputationStats { mean: 0.0, stddev: 0.0 });
+        }
+        let sum: f64 = inner.agents.values().map(|a| a.reputation as f64).sum();
+        let sum_sq: f64 = inner.agents.values().map(|a| (a.reputation as f64).powi(2)).sum();
+        let n = count as f64;
+        let mean = sum / n;
+        let variance = (sum_sq / n - mean * mean).max(0.0);
+        let stddev = variance.sqrt();
+        Ok(ReputationStats {
+            mean: mean as f32,
+            stddev: stddev as f32,
+        })
     }
 
     // --- Follows -------------------------------------------------------------
@@ -445,6 +496,9 @@ mod tests {
             inbox_url: format!("https://node.example.com/v1/agents/{did}/inbox"),
             display_name: None,
             public_key: None,
+            status: AgentStatus::Full,
+            contribution_count: 0,
+            reputation: 0.5,
         }
     }
 

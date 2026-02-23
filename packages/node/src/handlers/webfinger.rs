@@ -192,6 +192,7 @@ mod tests {
                 public_key: None,
                 status: semanticweft_node_api::AgentStatus::Full,
                 contribution_count: 0,
+                reputation: 0.5,
             })
             .await
             .unwrap();
@@ -251,6 +252,7 @@ mod tests {
                 public_key: None,
                 status: semanticweft_node_api::AgentStatus::Full,
                 contribution_count: 0,
+                reputation: 0.5,
             })
             .await
             .unwrap();

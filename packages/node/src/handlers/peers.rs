@@ -50,8 +50,15 @@ pub async fn add(
     Ok((StatusCode::OK, Json(peer)))
 }
 
-/// Fetch `/.well-known/semanticweft` from the peer and update its reputation
+/// Fetch `/.well-known/semanticweft` from the peer and nudge its reputation
 /// based on reachability and whether its declared `node_id` matches.
+///
+/// Adjustments follow the delta table in ADR-0008 §Phase 2b:
+/// - Successful verification (node_id matches): **+0.02**
+/// - Node-ID mismatch on discovery document: **−0.30**
+///
+/// The delta is applied to the peer's current reputation and clamped to
+/// `[0.0, 1.0]`, preserving any community-voted value rather than overwriting it.
 async fn verify_peer_reachability(
     client: reqwest::Client,
     storage: Arc<dyn Storage>,
@@ -89,15 +96,13 @@ async fn verify_peer_reachability(
 
             if id_matches {
                 tracing::debug!("verify_peer: {node_id} reachable, node_id confirmed");
-                // Nudge reputation toward 0.55 to reward a successful verification.
-                let _ = storage.update_peer_reputation(&node_id, 0.55).await;
+                nudge_peer_reputation(&storage, &node_id, 0.02).await;
             } else {
                 tracing::warn!(
                     "verify_peer: {node_id} reachable at {api_base} \
                      but node_id in discovery document does not match"
                 );
-                // Mismatched identity is a stronger signal of misconfiguration.
-                let _ = storage.update_peer_reputation(&node_id, 0.3).await;
+                nudge_peer_reputation(&storage, &node_id, -0.30).await;
             }
         }
         Ok(resp) => {
@@ -114,6 +119,21 @@ async fn verify_peer_reachability(
             tracing::warn!("verify_peer: {node_id} unreachable at {api_base}: {e}");
         }
     }
+}
+
+/// Apply an additive reputation delta to a peer, reading the current value
+/// first so that community-voted scores are preserved.
+async fn nudge_peer_reputation(storage: &Arc<dyn Storage>, node_id: &str, delta: f32) {
+    let current = match storage.list_peers().await {
+        Ok(peers) => peers
+            .iter()
+            .find(|p| p.node_id == node_id)
+            .map(|p| p.reputation)
+            .unwrap_or(0.5),
+        Err(_) => return,
+    };
+    let new_rep = (current + delta).clamp(0.0, 1.0);
+    let _ = storage.update_peer_reputation(node_id, new_rep).await;
 }
 
 /// `PATCH /v1/peers/{node_id}` — update a peer's reputation score.

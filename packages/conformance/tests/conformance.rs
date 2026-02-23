@@ -124,6 +124,7 @@ async fn seed_agent(
             public_key: Some(pubkey_multibase.to_string()),
             status: semanticweft_node_api::AgentStatus::Full,
             contribution_count: 0,
+            reputation: 0.5,
         })
         .await
         .expect("seed agent");

@@ -19,7 +19,9 @@ use axum::{
 };
 use serde::Deserialize;
 use semanticweft::{validate_unit, SemanticUnit};
-use semanticweft_node_api::{AgentProfile, AgentStatus, ApplyRequest, InboxResponse, RegisterRequest};
+use semanticweft_node_api::{
+    AgentProfile, AgentReputationUpdate, AgentStatus, ApplyRequest, InboxResponse, RegisterRequest,
+};
 use tracing::{info, warn};
 
 use crate::error::AppError;
@@ -65,6 +67,7 @@ pub async fn register(
         public_key: req.public_key,
         status: AgentStatus::Full,
         contribution_count: 0,
+        reputation: 0.5,
     };
 
     state.storage.put_agent(&profile).await?;
@@ -238,6 +241,7 @@ pub async fn apply(
         public_key: req.public_key,
         status: AgentStatus::Probationary,
         contribution_count: 0,
+        reputation: 0.5,
     };
 
     state.storage.put_agent(&profile).await?;
@@ -268,6 +272,105 @@ pub async fn apply(
     }
 
     Ok((StatusCode::CREATED, Json(profile)))
+}
+
+/// `PATCH /v1/agents/{did}/reputation` — update an agent's reputation score.
+///
+/// # Community voting gate
+///
+/// Only registered agents on this node may vote. The caller authenticates via
+/// HTTP Signature ([`RequireAuth`]). The handler then enforces:
+///
+/// 1. **Membership**: the caller must be a registered agent on this node.
+/// 2. **Threshold**: the caller's own reputation must be at or above the
+///    community voting threshold: `max(0.0, mean − σ_factor × stddev)`, where
+///    the statistics are computed over all registered agents and `σ_factor` is
+///    `SWEFT_REPUTATION_VOTE_SIGMA_FACTOR` (default 1.0).
+/// 3. **No self-voting**: an agent cannot update its own reputation.
+///
+/// # Weighted update
+///
+/// A qualifying vote is applied as a weighted average (EigenTrust):
+///
+/// ```text
+/// new_rep = current_rep × (1 − caller_rep) + proposed_rep × caller_rep
+/// ```
+///
+/// Returns 200 with the updated [`AgentProfile`] on success.
+pub async fn update_reputation(
+    State(state): State<AppState>,
+    Path(did): Path<String>,
+    auth: RequireAuth,
+    Json(update): Json<AgentReputationUpdate>,
+) -> Result<impl IntoResponse, AppError> {
+    // 1. Validate the proposed value.
+    if !update.reputation.is_finite() || update.reputation < 0.0 || update.reputation > 1.0 {
+        return Err(AppError::BadRequest(
+            "reputation must be a finite number in [0.0, 1.0]".into(),
+        ));
+    }
+
+    // 2. No self-voting.
+    if auth.did == did {
+        return Err(AppError::Forbidden(
+            "an agent cannot update its own reputation".into(),
+        ));
+    }
+
+    // 3. Caller must be a registered agent (membership gate).
+    let caller = state
+        .storage
+        .get_agent(&auth.did)
+        .await?
+        .ok_or_else(|| {
+            AppError::Forbidden(
+                "caller is not a registered agent; reputation updates are community-internal"
+                    .into(),
+            )
+        })?;
+
+    // 4. Community threshold gate: caller must be at or above mean − σ·stddev.
+    let stats = state.storage.agent_reputation_stats().await?;
+    let threshold =
+        (stats.mean - state.config.reputation_vote_sigma_factor * stats.stddev).max(0.0);
+    if caller.reputation < threshold {
+        return Err(AppError::Forbidden(format!(
+            "caller reputation {:.3} is below the community voting threshold {:.3}",
+            caller.reputation, threshold,
+        )));
+    }
+
+    // 5. Locate the target agent.
+    let target = state
+        .storage
+        .get_agent(&did)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("agent {did} not found")))?;
+
+    // 6. Weighted update: new = current × (1 − weight) + proposed × weight.
+    let weight = caller.reputation;
+    let new_reputation = (target.reputation * (1.0 - weight) + update.reputation * weight)
+        .clamp(0.0, 1.0);
+
+    state
+        .storage
+        .update_agent_reputation(&did, new_reputation)
+        .await
+        .map_err(|e| match e {
+            crate::storage::StorageError::NotFound => {
+                AppError::NotFound(format!("agent {did} not found"))
+            }
+            other => AppError::Internal(other.to_string()),
+        })?;
+
+    // Return the updated agent profile.
+    let profile = state
+        .storage
+        .get_agent(&did)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("agent {did} not found")))?;
+
+    Ok((StatusCode::OK, Json(profile)))
 }
 
 // ---------------------------------------------------------------------------
@@ -339,6 +442,7 @@ mod tests {
             public_key: None,
             status: semanticweft_node_api::AgentStatus::Full,
             contribution_count: 0,
+            reputation: 0.5,
         }).await.unwrap();
 
         let (node_key, node_did) = make_node_key_and_did();
@@ -374,6 +478,7 @@ mod tests {
             public_key: None,
             status: semanticweft_node_api::AgentStatus::Full,
             contribution_count: 0,
+            reputation: 0.5,
         }).await.unwrap();
 
         let unit = make_unit("did:key:z6MkSomeSender");
@@ -437,6 +542,7 @@ mod tests {
                 public_key: Some(pubkey_multibase.clone()),
                 status: semanticweft_node_api::AgentStatus::Full,
                 contribution_count: 0,
+                reputation: 0.5,
             })
             .await
             .unwrap();
@@ -504,6 +610,7 @@ mod tests {
                 public_key: None,
                 status: semanticweft_node_api::AgentStatus::Full,
                 contribution_count: 0,
+                reputation: 0.5,
             })
             .await
             .unwrap();
