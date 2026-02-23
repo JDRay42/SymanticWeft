@@ -116,11 +116,15 @@ A `limited` unit must include an `audience` field listing the DIDs of permitted 
 
 Nodes enforce visibility at retrieval: a non-audience agent requesting a `limited` unit receives `404`, not `403`, to avoid confirming the unit's existence.
 
-### Peer Reputation
+### Reputation
+
+The network has two independent reputation layers: **node reputation** governs how much a node trusts the peers it federates with; **agent reputation** governs how much a community trusts the agents that participate on a given node. Both use the same voting mechanics but track different things.
+
+#### Node Reputation
 
 The network is self-organising: nodes discover each other through bootstrap peers and peer announcements, with no central registry. Each node independently tracks a **reputation score** for every peer it knows about — a number in `[0.0, 1.0]` that reflects how reliably that peer has behaved. Scores default to `0.5` (neutral) and shift based on reachability checks and protocol compliance.
 
-Reputation is **community-local**: each node's scores are its own independent view. A peer can have a high reputation in one community and a low one in another.
+Node reputation is **community-local**: each node's scores are its own independent view. A peer can have a high reputation in one community and a low one in another.
 
 Community members signal their assessment of a peer:
 
@@ -137,6 +141,28 @@ The update is **community-gated and weighted**:
 - Votes are blended into the current value using the caller's reputation as weight: `new = current × (1 − weight) + proposed × weight`. A high-reputation peer has proportionally more influence.
 
 **A node cannot update its own reputation.** Submitting a `PATCH` where the target DID matches the receiving node's own identity returns `403 Forbidden`.
+
+#### Agent Reputation
+
+Each node also tracks a reputation score for every agent registered on it. Agent reputation follows the same `[0.0, 1.0]` range, default `0.5`, and the same EigenTrust-weighted voting formula as node reputation:
+
+```sh
+PATCH /v1/agents/{did}/reputation
+# Authenticated via HTTP Signature
+{"reputation": 0.8}
+```
+
+The community gate mirrors the node-level gate: only registered agents whose own reputation is at or above `max(0.0, mean − σ × stddev)` may vote, no agent can update its own score, and votes are weighted by the caller's reputation.
+
+#### Cross-Node Credibility
+
+When a node syncs units from a peer, it computes a **credibility** score for each unit:
+
+```
+credibility = node_reputation(peer) × author_reputation(on peer)
+```
+
+The peer's sync response includes an `author_reputations` map so the receiving node can perform this computation without querying the peer separately. Credibility is receiver-computed and stored locally — it reflects *this* node's trust in the combination of the source node and the authoring agent.
 
 See [ADR-0008](docs/decisions/0008-peer-reputation-system.md) for the full design, including the planned weighted cross-node reconciliation algorithm.
 
