@@ -217,7 +217,7 @@ mod tests {
             author: "test-agent".into(),
             confidence: None,
             assumptions: None,
-            source: None,
+            sources: None,
             references: if refs.is_empty() {
                 None
             } else {
@@ -266,7 +266,7 @@ mod tests {
 
         let mut g = Graph::new();
         g.add(unit(id_a, UnitType::Assertion, vec![]));
-        g.add(unit(id_b, UnitType::Inference, vec![(id_a, RelType::DerivesFrom)]));
+        g.add(unit(id_b, UnitType::Inference, vec![(id_a, RelType::DerivedFrom)]));
 
         assert_eq!(g.outgoing(id_b).len(), 1);
         assert_eq!(g.outgoing(id_b)[0].id, id_a);
@@ -287,8 +287,8 @@ mod tests {
         // chain: ids[2] -> ids[1] -> ids[0]
         let mut g = Graph::new();
         g.add(unit(ids[0], UnitType::Assertion, vec![]));
-        g.add(unit(ids[1], UnitType::Inference, vec![(ids[0], RelType::DerivesFrom)]));
-        g.add(unit(ids[2], UnitType::Inference, vec![(ids[1], RelType::DerivesFrom)]));
+        g.add(unit(ids[1], UnitType::Inference, vec![(ids[0], RelType::DerivedFrom)]));
+        g.add(unit(ids[2], UnitType::Inference, vec![(ids[1], RelType::DerivedFrom)]));
 
         let anc = g.ancestors(ids[2]);
         assert_eq!(anc.len(), 2);
@@ -308,8 +308,8 @@ mod tests {
 
         let mut g = Graph::new();
         g.add(unit(ids[0], UnitType::Assertion, vec![]));
-        g.add(unit(ids[1], UnitType::Inference, vec![(ids[0], RelType::DerivesFrom)]));
-        g.add(unit(ids[2], UnitType::Challenge, vec![(ids[1], RelType::Rebuts)]));
+        g.add(unit(ids[1], UnitType::Inference, vec![(ids[0], RelType::DerivedFrom)]));
+        g.add(unit(ids[2], UnitType::Challenge, vec![(ids[1], RelType::Contradicts)]));
         g.add(unit(ids[3], UnitType::Question, vec![]));
 
         let sg = g.subgraph(ids[1]);

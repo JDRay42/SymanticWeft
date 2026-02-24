@@ -144,7 +144,7 @@ following domain":
 ### Trust revocation
 
 Revoke a trust relationship by issuing a `challenge` unit that:
-1. References the original trust unit (rel: `rebuts`).
+1. References the original trust unit (rel: `contradicts`).
 2. Sets `content` to explain why the trust is withdrawn.
 3. Is signed by the same author as the original trust unit (same DID).
 

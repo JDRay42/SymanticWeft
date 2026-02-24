@@ -22,7 +22,7 @@ use crate::types::{SemanticUnit, Source, UnitType};
 ///   • Climate sensitivity remains within the IPCC AR6 likely range.
 ///
 /// References:
-///   derives-from  019526b2-f68a-7c3e-a0b4-1d2e3f4a5b6d
+///   derived-from  019526b2-f68a-7c3e-a0b4-1d2e3f4a5b6d
 ///
 /// id: 019526b2-f68a-7c3e-a0b4-1d2e3f4a5b6e  created: 2026-02-18T12:02:00Z
 /// ```
@@ -44,17 +44,19 @@ pub fn render_unit(unit: &SemanticUnit) -> String {
     out.push_str(&wrap_content(&unit.content, 80));
     out.push('\n');
 
-    // source
-    if let Some(source) = &unit.source {
+    // sources
+    if let Some(sources) = &unit.sources {
         out.push('\n');
-        match source {
-            Source::Uri(uri) => out.push_str(&format!("Source: {}", uri)),
-            Source::Labeled { label, uri } => match uri {
-                Some(u) => out.push_str(&format!("Source: {} <{}>", label, u)),
-                None => out.push_str(&format!("Source: {}", label)),
-            },
+        for source in sources {
+            match source {
+                Source::Uri(uri) => out.push_str(&format!("Source: {}", uri)),
+                Source::Labeled { label, uri } => match uri {
+                    Some(u) => out.push_str(&format!("Source: {} <{}>", label, u)),
+                    None => out.push_str(&format!("Source: {}", label)),
+                },
+            }
+            out.push('\n');
         }
-        out.push('\n');
     }
 
     // assumptions
@@ -203,7 +205,7 @@ mod tests {
             author: "agent-weathersim-v2".into(),
             confidence: None,
             assumptions: None,
-            source: None,
+            sources: None,
             references: None,
             visibility: None,
             audience: None,

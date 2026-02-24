@@ -44,7 +44,7 @@ impl std::fmt::Display for UnitType {
 
 /// The typed relationship a referencing unit has to the unit it references.
 ///
-/// Serialises as a kebab-case string (e.g. `"derives-from"`).
+/// Serialises as a kebab-case string (e.g. `"derived-from"`).
 /// See `spec/semantic-unit.md §4.4.1` for the full relationship table.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -52,9 +52,9 @@ pub enum RelType {
     /// This unit provides evidence or reasoning for the referenced unit.
     Supports,
     /// This unit argues against the referenced unit's content.
-    Rebuts,
+    Contradicts,
     /// This unit's content was logically or causally derived from the referenced unit.
-    DerivesFrom,
+    DerivedFrom,
     /// This unit raises a question about the referenced unit.
     Questions,
     /// This unit narrows, specialises, or adds precision to the referenced unit.
@@ -63,13 +63,13 @@ pub enum RelType {
     Notifies,
 }
 
-/// Formats the relationship as its kebab-case wire-format string (e.g. `"derives-from"`).
+/// Formats the relationship as its kebab-case wire-format string (e.g. `"derived-from"`).
 impl std::fmt::Display for RelType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RelType::Supports => write!(f, "supports"),
-            RelType::Rebuts => write!(f, "rebuts"),
-            RelType::DerivesFrom => write!(f, "derives-from"),
+            RelType::Contradicts => write!(f, "contradicts"),
+            RelType::DerivedFrom => write!(f, "derived-from"),
             RelType::Questions => write!(f, "questions"),
             RelType::Refines => write!(f, "refines"),
             RelType::Notifies => write!(f, "notifies"),
@@ -106,14 +106,14 @@ impl std::str::FromStr for RelType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "supports" => Ok(RelType::Supports),
-            "rebuts" => Ok(RelType::Rebuts),
-            "derives-from" => Ok(RelType::DerivesFrom),
+            "contradicts" => Ok(RelType::Contradicts),
+            "derived-from" => Ok(RelType::DerivedFrom),
             "questions" => Ok(RelType::Questions),
             "refines" => Ok(RelType::Refines),
             "notifies" => Ok(RelType::Notifies),
             _ => Err(format!(
                 "unknown rel type {:?}; expected one of: \
-                 supports, rebuts, derives-from, questions, refines, notifies",
+                 supports, contradicts, derived-from, questions, refines, notifies",
                 s
             )),
         }
@@ -255,9 +255,10 @@ pub struct SemanticUnit {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assumptions: Option<Vec<String>>,
 
-    /// Citation or provenance for this unit's content.
+    /// Citations or provenance for this unit's content.
+    /// Multiple entries represent independent sources, each strengthening the claim.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<Source>,
+    pub sources: Option<Vec<Source>>,
 
     /// Typed links to other units this unit relates to.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -304,7 +305,7 @@ impl SemanticUnit {
             author: author.into(),
             confidence: None,
             assumptions: None,
-            source: None,
+            sources: None,
             references: None,
             visibility: None,
             audience: None,

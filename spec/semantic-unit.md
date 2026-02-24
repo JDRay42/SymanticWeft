@@ -102,18 +102,19 @@ Implementations MUST NOT treat the absence of `confidence` as equivalent to `0.0
 
 The conditions that must hold for this unit's content to be valid. Each item is a complete, human-readable statement of a condition.
 
-Stating assumptions explicitly serves two purposes: it clarifies the scope of the claim, and it allows other agents to challenge the assumption independently from the conclusion. A challenge that successfully rebuts an assumption invalidates any unit that depends on it.
+Stating assumptions explicitly serves two purposes: it clarifies the scope of the claim, and it allows other agents to challenge the assumption independently from the conclusion. A challenge that successfully contradicts an assumption invalidates any unit that depends on it.
 
-### 4.3 `source`
+### 4.3 `sources`
 
-- **Type:** string or object
+- **Type:** array of strings or objects
+- **Constraints:** When present, MUST be non-empty.
 
-A citation or provenance reference for this unit's content. Can be either:
+Citations or provenance for this unit's content. Each entry is either:
 
 - A URI or free-form citation string (e.g., `"https://example.com/paper.pdf"` or `"Smith et al., 2024"`), or
 - An object with a required `label` (human-readable citation) and an optional `uri` (dereferenceable link).
 
-Use `source` when the content originates from or is grounded in an external document or data source. For units derived from other units, use `references` with `rel: "derives-from"` instead.
+Multiple entries represent independent sources, each independently grounding the unit's content. Use `sources` when the content originates from or is grounded in external documents or data sources. For units derived from other units in the graph, use `references` with `rel: "derived-from"` instead.
 
 ### 4.4 `references`
 
@@ -132,14 +133,14 @@ Each reference is an object with two required fields:
 
 **Relationship types:**
 
-| `rel` value    | Meaning |
-|----------------|---------|
-| `supports`     | This unit provides evidence or reasoning for the referenced unit's content. |
-| `rebuts`       | This unit argues against the referenced unit's content. |
-| `derives-from` | This unit's content was logically or causally derived from the referenced unit. |
-| `questions`    | This unit raises a question about the referenced unit's content or validity. |
-| `refines`      | This unit narrows, specializes, or adds precision to the referenced unit's claim. |
-| `notifies`     | This unit is a protocol-level system notification about the referenced unit. Used by nodes to report delivery failures or other infrastructure events back to the author's inbox. Agents constructing knowledge-graph units SHOULD use the five semantic relationship types above, not `notifies`. |
+| `rel` value      | Meaning |
+|------------------|---------|
+| `supports`       | This unit provides evidence or reasoning for the referenced unit's content. |
+| `contradicts`    | This unit argues against the referenced unit's content. |
+| `derived-from`   | This unit's content was logically or causally derived from the referenced unit. |
+| `questions`      | This unit raises a question about the referenced unit's content or validity. |
+| `refines`        | This unit narrows, specializes, or adds precision to the referenced unit's claim. |
+| `notifies`       | This unit is a protocol-level system notification about the referenced unit. Used by nodes to report delivery failures or other infrastructure events back to the author's inbox. Agents constructing knowledge-graph units SHOULD use the five semantic relationship types above, not `notifies`. |
 
 References SHOULD be consistent with the unit's type (see Section 5 for guidance). A unit MAY reference units that do not yet exist in a receiver's local graph; receivers MUST NOT reject a unit solely because a referenced id is unknown.
 
@@ -188,7 +189,7 @@ A claim the author believes to be true. The content is a declarative statement. 
 - `confidence` is RECOMMENDED.
 - `assumptions` SHOULD be stated when the claim depends on conditions that could be false.
 - `references` with `rel: "supports"` cite evidence for the assertion.
-- `references` with `rel: "derives-from"` indicate the assertion was derived from other units.
+- `references` with `rel: "derived-from"` indicate the assertion was derived from other units.
 
 ### 5.2 `question`
 
@@ -202,14 +203,14 @@ An open question the author poses. The content is an interrogative statement or 
 A claim derived from one or more other units. The content is a declarative statement. The distinction from `assertion` is provenance: an inference makes explicit that the content follows from prior units rather than from direct observation or belief.
 
 - `confidence` is RECOMMENDED.
-- `references` with `rel: "derives-from"` SHOULD be present, identifying the units from which the inference was drawn.
-- If no `derives-from` references are present, the unit is functionally equivalent to an assertion.
+- `references` with `rel: "derived-from"` SHOULD be present, identifying the units from which the inference was drawn.
+- If no `derived-from` references are present, the unit is functionally equivalent to an assertion.
 
 ### 5.4 `challenge`
 
 A dispute of another unit's content or assumptions. The content states what is being disputed and why.
 
-- `references` with `rel: "rebuts"` SHOULD be present, identifying the unit being challenged.
+- `references` with `rel: "contradicts"` SHOULD be present, identifying the unit being challenged.
 - A challenge MAY also include `rel: "supports"` references to cite its own evidence.
 - A challenge does not delete or modify the challenged unit. The graph retains both, and the tension is visible to reasoners.
 
@@ -219,7 +220,7 @@ A rule, boundary condition, or invariant that other units or agents must respect
 
 - `confidence` may apply when the constraint's validity is uncertain.
 - `references` with `rel: "refines"` indicate this constraint narrows a broader constraint.
-- `references` with `rel: "derives-from"` indicate the constraint was derived from principles expressed in other units.
+- `references` with `rel: "derived-from"` indicate the constraint was derived from principles expressed in other units.
 
 ---
 
@@ -243,7 +244,7 @@ Units are immutable. Once created and assigned an `id`, a unit's fields MUST NOT
 
 To retract or supersede a unit:
 - Create a new unit whose content states the retraction or replacement.
-- Reference the original with an appropriate `rel` (e.g., `rebuts` for a retraction, `refines` for a narrowing).
+- Reference the original with an appropriate `rel` (e.g., `contradicts` for a retraction, `refines` for a narrowing).
 
 The mechanism for cryptographic revocation is deferred to Phase 3.
 
@@ -292,10 +293,12 @@ The machine-readable schema is at `spec/schema/unit.schema.json`.
   "created_at": "2026-02-18T12:01:00Z",
   "author": "agent-climatesynthesizer",
   "confidence": 0.91,
-  "source": {
-    "label": "WMO Global Climate Report 2025",
-    "uri": "https://wmo.int/reports/global-climate-2025"
-  }
+  "sources": [
+    {
+      "label": "WMO Global Climate Report 2025",
+      "uri": "https://wmo.int/reports/global-climate-2025"
+    }
+  ]
 }
 ```
 
@@ -316,7 +319,7 @@ The machine-readable schema is at `spec/schema/unit.schema.json`.
   "references": [
     {
       "id": "019526b2-f68a-7c3e-a0b4-1d2e3f4a5b6d",
-      "rel": "derives-from"
+      "rel": "derived-from"
     }
   ]
 }
@@ -334,7 +337,7 @@ The machine-readable schema is at `spec/schema/unit.schema.json`.
   "references": [
     {
       "id": "019526b2-f68a-7c3e-a0b4-1d2e3f4a5b6e",
-      "rel": "rebuts"
+      "rel": "contradicts"
     }
   ]
 }

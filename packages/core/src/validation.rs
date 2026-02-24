@@ -228,7 +228,7 @@ mod tests {
             author: "agent-weathersim-v2".into(),
             confidence: None,
             assumptions: None,
-            source: None,
+            sources: None,
             references: None,
             visibility: None,
             audience: None,
@@ -332,7 +332,7 @@ mod tests {
         let mut u = minimal();
         u.references = Some(vec![Reference {
             id: "019526b2-f68a-7c3e-a0b4-1d2e3f4a5b6d".into(),
-            rel: RelType::DerivesFrom,
+            rel: RelType::DerivedFrom,
         }]);
         assert_eq!(validate_unit(&u), Ok(()));
     }
@@ -434,14 +434,19 @@ mod tests {
             "created_at": "2026-02-18T12:01:00Z",
             "author": "agent-climatesynthesizer",
             "confidence": 0.91,
-            "source": {
-                "label": "WMO Global Climate Report 2025",
-                "uri": "https://wmo.int/reports/global-climate-2025"
-            }
+            "sources": [
+                {
+                    "label": "WMO Global Climate Report 2025",
+                    "uri": "https://wmo.int/reports/global-climate-2025"
+                }
+            ]
         }"#;
         let unit: SemanticUnit = serde_json::from_str(json).unwrap();
         assert_eq!(validate_unit(&unit), Ok(()));
-        assert!(matches!(unit.source, Some(Source::Labeled { .. })));
+        assert!(matches!(
+            unit.sources.as_deref(),
+            Some([Source::Labeled { .. }, ..])
+        ));
     }
 
     #[test]

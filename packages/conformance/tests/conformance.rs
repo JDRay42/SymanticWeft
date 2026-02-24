@@ -388,7 +388,7 @@ async fn subgraph_traversal() {
     let mut child = SemanticUnit::new(UnitType::Inference, "child", "did:key:z6MkConformance");
     child.references = Some(vec![semanticweft::Reference {
         id: root_id.clone(),
-        rel: semanticweft::RelType::DerivesFrom,
+        rel: semanticweft::RelType::DerivedFrom,
     }]);
     let child_id = child.id.clone();
     client.post(format!("{base}/v1/units")).json(&child).send().await.unwrap();
@@ -1423,7 +1423,7 @@ async fn forward_references_are_allowed() {
     let mut unit = SemanticUnit::new(UnitType::Inference, "inference with forward ref", "did:key:z6MkForward");
     unit.references = Some(vec![Reference {
         id: future_id.clone(),
-        rel: RelType::DerivesFrom,
+        rel: RelType::DerivedFrom,
     }]);
 
     let resp = client
@@ -1540,12 +1540,12 @@ async fn subgraph_respects_depth_limit() {
     client.post(format!("{base}/v1/units")).json(&root).send().await.unwrap();
 
     let mut unit_b = SemanticUnit::new(UnitType::Inference, "child B", "did:key:z6MkDepth");
-    unit_b.references = Some(vec![Reference { id: root_id.clone(), rel: RelType::DerivesFrom }]);
+    unit_b.references = Some(vec![Reference { id: root_id.clone(), rel: RelType::DerivedFrom }]);
     let b_id = unit_b.id.clone();
     client.post(format!("{base}/v1/units")).json(&unit_b).send().await.unwrap();
 
     let mut unit_c = SemanticUnit::new(UnitType::Inference, "grandchild C", "did:key:z6MkDepth");
-    unit_c.references = Some(vec![Reference { id: b_id.clone(), rel: RelType::DerivesFrom }]);
+    unit_c.references = Some(vec![Reference { id: b_id.clone(), rel: RelType::DerivedFrom }]);
     let c_id = unit_c.id.clone();
     client.post(format!("{base}/v1/units")).json(&unit_c).send().await.unwrap();
 

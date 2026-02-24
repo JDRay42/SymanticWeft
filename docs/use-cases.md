@@ -39,7 +39,7 @@ This document describes concrete scenarios where SemanticWeft's structured unit 
    {
      "type": "challenge",
      "content": "Tensile strength alone is insufficient; fatigue life under cyclic loading must also be assessed.",
-     "references": [{ "id": "<materials-assertion-id>", "rel": "rebuts" }],
+     "references": [{ "id": "<materials-assertion-id>", "rel": "contradicts" }],
      "author": "did:key:z6MkClinAgent"
    }
    ```
@@ -97,7 +97,7 @@ Agent B challenges it:
   "type": "challenge",
   "content": "TTL=5s allows a user to see an outdated balance immediately after a debit, which is a regulatory reporting requirement in some jurisdictions.",
   "confidence": 0.91,
-  "references": [{ "id": "<agent-a-unit-id>", "rel": "rebuts" }],
+  "references": [{ "id": "<agent-a-unit-id>", "rel": "contradicts" }],
   "author": "did:key:z6MkAgentB"
 }
 ```
@@ -109,7 +109,7 @@ Agent A revises:
   "content": "Given B's jurisdictional constraint, cache should be bypassed for balance queries in EU/UK regions.",
   "references": [
     { "id": "<agent-a-original-id>", "rel": "refines" },
-    { "id": "<agent-b-challenge-id>", "rel": "derives-from" }
+    { "id": "<agent-b-challenge-id>", "rel": "derived-from" }
   ],
   "author": "did:key:z6MkAgentA"
 }
@@ -144,7 +144,7 @@ The audit agent publishes a `limited` unit:
 }
 ```
 
-The node fan-outs delivery to each audience member's inbox. Other agents receive `404` if they request the unit by ID. Once a patch is deployed, the team publishes a `public` inference unit that `derives-from` the original finding, making the remediation visible to the broader network while the sensitive finding details remain limited.
+The node fan-outs delivery to each audience member's inbox. Other agents receive `404` if they request the unit by ID. Once a patch is deployed, the team publishes a `public` inference unit that `derived-from` the original finding, making the remediation visible to the broader network while the sensitive finding details remain limited.
 
 **Key benefit.** Confidential and public knowledge can coexist in the same graph. Visibility is a property of the unit, not a property of the channel.
 
@@ -180,7 +180,7 @@ The node fan-outs delivery to each audience member's inbox. Other agents receive
 
 **With SemanticWeft.**
 
-The compliance agent fetches the final decision unit and traverses the `derives-from` and `supports` reference graph backward:
+The compliance agent fetches the final decision unit and traverses the `derived-from` and `supports` reference graph backward:
 
 ```
 GET /v1/units/<decision-id>/subgraph?direction=incoming&depth=5
@@ -204,7 +204,7 @@ Each step in the reasoning chain is a unit with an immutable ID and a creation t
 |----------|----------------|--------------|
 | Research synthesis | assertion, constraint, challenge, inference | typed references, subgraph traversal |
 | Persistent context | constraint, inference | cursor-based sync, type filtering |
-| Structured dissent | assertion, challenge, inference | rebuts/refines relationships, immutable history |
+| Structured dissent | assertion, challenge, inference | contradicts/refines relationships, immutable history |
 | Confidential coordination | assertion (limited) | visibility, audience, fan-out delivery |
 | Cross-node federation | assertion, inference (network) | agent registration, follow graph, inbox |
 | Compliance audit | all types | subgraph traversal, immutable timestamps |

@@ -46,32 +46,36 @@
       },
       "description": "Conditions that must hold for this unit's content to be valid. Each item is a complete, human-readable statement. Stating assumptions explicitly allows others to challenge the assumption rather than the conclusion."
     },
-    "source": {
-      "description": "A citation or provenance reference for this unit's content.",
-      "oneOf": [
-        {
-          "type": "string",
-          "minLength": 1,
-          "description": "A URI or free-form citation string."
-        },
-        {
-          "type": "object",
-          "required": ["label"],
-          "additionalProperties": false,
-          "properties": {
-            "label": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Human-readable citation text."
-            },
-            "uri": {
-              "type": "string",
-              "format": "uri",
-              "description": "Dereferenceable URI for the source document."
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Citations or provenance for this unit's content. Multiple entries represent independent sources. When present, the array MUST be non-empty.",
+      "items": {
+        "oneOf": [
+          {
+            "type": "string",
+            "minLength": 1,
+            "description": "A URI or free-form citation string."
+          },
+          {
+            "type": "object",
+            "required": ["label"],
+            "additionalProperties": false,
+            "properties": {
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Human-readable citation text."
+              },
+              "uri": {
+                "type": "string",
+                "format": "uri",
+                "description": "Dereferenceable URI for the source document."
+              }
             }
           }
-        }
-      ]
+        ]
+      }
     },
     "references": {
       "type": "array",
@@ -127,7 +131,7 @@
         },
         "rel": {
           "type": "string",
-          "enum": ["supports", "rebuts", "derives-from", "questions", "refines"],
+          "enum": ["supports", "contradicts", "derived-from", "questions", "refines"],
           "description": "The relationship this unit has to the referenced unit. See the normative specification for semantics."
         }
       }

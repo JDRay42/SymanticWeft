@@ -71,7 +71,7 @@ enum Command {
     /// Examples:
     ///   sweft new -t assertion -c "PCI DSS applies." -a "agent://analyst-1"
     ///   sweft new -t inference -c "..." -a "agent://x" --confidence 0.8 \
-    ///     --ref 019526b2-f68a-7c3e-a0b4-1d2e3f4a5b6d:derives-from
+    ///     --ref 019526b2-f68a-7c3e-a0b4-1d2e3f4a5b6d:derived-from
     New {
         /// Unit type: assertion | question | inference | challenge | constraint
         #[arg(short = 't', long = "type", value_name = "TYPE")]
@@ -99,7 +99,7 @@ enum Command {
         source: Option<String>,
 
         /// A typed reference to another unit: <uuid>:<rel>.
-        /// <rel> is one of: supports | rebuts | derives-from | questions | refines
+        /// <rel> is one of: supports | contradicts | derived-from | questions | refines
         /// Repeat for multiple references: --ref <uuid>:<rel> --ref <uuid>:<rel>
         #[arg(long = "ref", value_name = "UUID:REL")]
         references: Vec<String>,
@@ -307,7 +307,7 @@ fn main() {
             } else {
                 Some(assumptions)
             };
-            unit.source = source.map(Source::Uri);
+            unit.sources = source.map(|s| vec![Source::Uri(s)]);
             unit.references = parsed_refs;
 
             // Validate before printing so the user gets a clear error rather than

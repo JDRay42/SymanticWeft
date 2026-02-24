@@ -180,7 +180,7 @@ mod tests {
             author: "test-agent".into(),
             confidence: None,
             assumptions: None,
-            source: None,
+            sources: None,
             references: None,
             visibility: None,
             audience: None,
